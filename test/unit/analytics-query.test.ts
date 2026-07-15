@@ -44,6 +44,13 @@ describe("resolveAnalyticsWindow", () => {
     expect(resolveAnalyticsWindow(undefined, "07/01/2026", NOW).ok).toBe(false);
   });
 
+  it("rejects a calendar date that Date would silently roll over", () => {
+    // 2026-02-30 parses (Date rolls it to 2026-03-02) but is not a real date;
+    // accepting it would run the query for a different window than requested.
+    expect(resolveAnalyticsWindow("2026-02-30", undefined, NOW).ok).toBe(false);
+    expect(resolveAnalyticsWindow(undefined, "2026-04-31", NOW).ok).toBe(false);
+  });
+
   it("rejects an inverted window", () => {
     const result = resolveAnalyticsWindow("2026-07-10", "2026-07-01", NOW);
     expect(result.ok).toBe(false);
