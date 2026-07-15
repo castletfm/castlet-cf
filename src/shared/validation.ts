@@ -132,3 +132,54 @@ export const episodePatchSchema = z
   .refine((value) => Object.keys(value).some((key) => key !== "version"), {
     message: "At least one updatable field is required",
   });
+
+// ---------------------------------------------------------------------------
+// Uploads (mvp-design.md sections 11.1, 11.3, 11.5)
+// ---------------------------------------------------------------------------
+
+export const ownerKindSchema = z.enum(["show", "episode"]);
+
+export const storageKindSchema = z.enum(["artwork", "audio"]);
+
+/** Accepted canonical MIME types (section 11.1). */
+export const uploadContentTypeSchema = z.enum([
+  "audio/mpeg",
+  "audio/mp4",
+  "image/jpeg",
+  "image/png",
+]);
+
+/**
+ * Initiate-upload request (section 11.3). Artwork always belongs to a show
+ * and audio always belongs to an episode, so the ownerKind/kind pairing is a
+ * structural rule enforced here. Extension/MIME agreement and size ceilings
+ * are checked in the domain layer where the configured limits live.
+ */
+export const uploadInitiateSchema = z
+  .strictObject({
+    ownerKind: ownerKindSchema,
+    ownerId: z.uuid(),
+    kind: storageKindSchema,
+    filename: z.string().trim().min(1).max(500),
+    contentType: uploadContentTypeSchema,
+    size: z.number().int().min(1),
+  })
+  .refine((value) => (value.kind === "artwork") === (value.ownerKind === "show"), {
+    message: "Artwork uploads belong to a show; audio uploads belong to an episode",
+  });
+
+/**
+ * Optional client metadata sent with upload completion (section 11.5).
+ * Duration is persisted on the episode; image dimensions are sanity-checked
+ * for artwork (client remains responsible for full image validation).
+ */
+export const uploadCompleteSchema = z.strictObject({
+  durationSeconds: z
+    .number()
+    .int()
+    .min(0)
+    .max(172_800) // 48 hours; anything longer is an obvious client error
+    .nullish(),
+  imageWidth: z.number().int().min(1).max(10_000).nullish(),
+  imageHeight: z.number().int().min(1).max(10_000).nullish(),
+});

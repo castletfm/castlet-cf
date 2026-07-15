@@ -9,6 +9,7 @@ import { requestId } from "./middleware/request-id";
 import { authRoutes } from "./routes/auth";
 import { episodeRoutes, showEpisodeRoutes } from "./routes/episodes";
 import { showRoutes } from "./routes/shows";
+import { uploadRoutes } from "./routes/uploads";
 
 const app = new Hono<AppEnv>();
 
@@ -29,9 +30,10 @@ app.route("/api/auth", authRoutes);
 app.route("/api/shows", showRoutes);
 app.route("/api/shows", showEpisodeRoutes);
 app.route("/api/episodes", episodeRoutes);
+app.route("/api/uploads", uploadRoutes);
 
-// Later phases add /api/uploads, /feeds/*, /media/*, /artwork/*, analytics,
-// and maintenance routes here.
+// Later phases add /feeds/*, /media/*, /artwork/*, analytics, and
+// maintenance routes here.
 
 app.notFound(notFound);
 app.onError(onError);

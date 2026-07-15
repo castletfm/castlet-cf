@@ -40,6 +40,10 @@ export default defineConfig(async () => {
             ADMIN_ACCESS_KEY_SHA256: TEST_ADMIN_ACCESS_KEY_SHA256,
             SESSION_SIGNING_KEY: TEST_SESSION_SIGNING_KEY,
             TURNSTILE_SECRET_KEY: TEST_TURNSTILE_SECRET_KEY,
+            // Dummy R2 SigV4 credentials: presigned URLs are generated (and
+            // parsed by tests) but never sent to a real S3 endpoint.
+            R2_ACCESS_KEY_ID: "test-r2-access-key-id",
+            R2_SECRET_ACCESS_KEY: "test-r2-secret-access-key",
             TEST_MIGRATIONS: migrations,
           },
         },
