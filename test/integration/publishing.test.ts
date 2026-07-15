@@ -2,6 +2,7 @@ import { SELF, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { EpisodeResource, ShowResource } from "../../src/shared/contracts";
+import { publishEpisode } from "../../src/worker/domain/episodes";
 import { synchronizeFeed } from "../../src/worker/services/feed-sync";
 import {
   BASE,
@@ -576,5 +577,125 @@ describe("concurrent same-show feed sync", () => {
     const state = await showFeedState(show.id);
     expect(state.feed_published_revision).toBe(state.feed_revision);
     expect(state.feed_error).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Validate-then-write races (the publish/slug fences)
+// ---------------------------------------------------------------------------
+
+type PreparedStatement = ReturnType<D1Database["prepare"]>;
+
+/**
+ * Deterministically lands a concurrent mutation inside a read->write window:
+ * the first time a prepared statement whose SQL contains `needle` runs its
+ * terminal `.first()`, `mutate` is awaited before the read returns. Wrapping
+ * `.bind()` too keeps the hook alive across `prepare().bind().first()`.
+ */
+function raceOnRead(needle: string, mutate: () => Promise<void>): () => void {
+  const db = env.DB as unknown as { prepare: (sql: string) => PreparedStatement };
+  const originalPrepare = db.prepare.bind(db);
+  let fired = false;
+
+  function wrap(stmt: PreparedStatement, sql: string): PreparedStatement {
+    const s = stmt as unknown as {
+      bind: (...a: unknown[]) => PreparedStatement;
+      first: (...a: unknown[]) => Promise<unknown>;
+    };
+    const originalBind = s.bind.bind(s);
+    const originalFirst = s.first.bind(s);
+    s.bind = (...a: unknown[]): PreparedStatement => wrap(originalBind(...a), sql);
+    s.first = async (...a: unknown[]): Promise<unknown> => {
+      if (!fired && sql.includes(needle)) {
+        fired = true;
+        await mutate();
+      }
+      return originalFirst(...a);
+    };
+    return stmt;
+  }
+
+  db.prepare = (sql: string): PreparedStatement => wrap(originalPrepare(sql), sql);
+  return () => {
+    db.prepare = originalPrepare;
+  };
+}
+
+describe("validate-then-write races", () => {
+  it("rejects a publish whose validated version a concurrent PATCH bumped, and writes no feed", async () => {
+    await makePublishable(episode.id);
+
+    // Blank the description AND bump the version the instant the publish flow
+    // reads the show — i.e. AFTER missingPublishRequirements saw a good
+    // description but BEFORE the fenced publish UPDATE. Without the version
+    // fence, publish would commit an empty-description episode into the feed.
+    const restore = raceOnRead("FROM shows WHERE id = ?", async () => {
+      await env.DB.prepare(
+        "UPDATE episodes SET description = '', version = version + 1 WHERE id = ?",
+      )
+        .bind(episode.id)
+        .run();
+    });
+
+    let res: Response;
+    try {
+      res = await publish(episode.id);
+    } finally {
+      restore();
+    }
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as ErrorBody;
+    // The reported reason reflects reality (blanked description), not a
+    // misleading EPISODE_ALREADY_PUBLISHED.
+    expect(body.error.code).toBe("EPISODE_NOT_PUBLISHABLE");
+    expect(body.error.details).toEqual({ missing: ["description"] });
+
+    // The episode stayed unpublished and no canonical feed was written.
+    expect((await episodeState(episode.id)).status).toBe("draft");
+    expect(await readFeed(show.slug)).toBeNull();
+  });
+
+  it("rejects a slug change fenced on a concurrent first-publish's slug lock", async () => {
+    await makePublishable(episode.id);
+    const deps = {
+      db: env.DB,
+      media: env.MEDIA,
+      publicBaseUrl: env.PUBLIC_BASE_URL as string,
+    };
+
+    // A first-publish locks the slug (without bumping shows.version) the instant
+    // the slug-changing PATCH checks the new slug's availability — i.e. AFTER the
+    // PATCH read an unlocked show but BEFORE its fenced UPDATE. Without the
+    // slug_locked_at fence, the version guard alone (version unchanged) would let
+    // a published show's slug change and break feeds/{slug}.xml.
+    const restore = raceOnRead("FROM shows WHERE slug = ?", async () => {
+      const published = await publishEpisode(deps, episode.id);
+      expect(published.ok).toBe(true);
+    });
+
+    const newSlug = uniqueSlug("relocated");
+    let res: Response;
+    try {
+      res = await SELF.fetch(`${BASE}/api/shows/${show.id}`, {
+        method: "PATCH",
+        headers: writeHeaders(auth),
+        body: JSON.stringify({ version: show.version, slug: newSlug }),
+      });
+    } finally {
+      restore();
+    }
+
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as ErrorBody).error.code).toBe("SLUG_LOCKED");
+
+    // The slug is locked and unchanged; the feed still lives at the old slug.
+    const state = await showFeedState(show.id);
+    expect(state.slug_locked_at).not.toBeNull();
+    const showRow = await SELF.fetch(`${BASE}/api/shows/${show.id}`, {
+      headers: readHeaders(auth),
+    });
+    expect(((await showRow.json()) as ShowResource).slug).toBe(show.slug);
+    expect(await readFeed(newSlug)).toBeNull();
   });
 });

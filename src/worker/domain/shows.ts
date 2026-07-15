@@ -111,7 +111,8 @@ export async function updateShow(
     return { ok: false, error: "VERSION_CONFLICT" };
   }
 
-  if (patch.slug !== undefined && patch.slug !== current.slug) {
+  const changingSlug = patch.slug !== undefined && patch.slug !== current.slug;
+  if (changingSlug) {
     // Slug is immutable once locked at first publish (section 9.1).
     if (current.slug_locked_at !== null) {
       return { ok: false, error: "SLUG_LOCKED" };
@@ -128,6 +129,10 @@ export async function updateShow(
     updated = await updateShowMetadata(db, {
       id,
       expectedVersion: patch.version,
+      // On a slug change the write is fenced on slug_locked_at IS NULL so a
+      // concurrent first-publish (which locks the slug without bumping version)
+      // cannot slip past the in-memory check above (section 12.1).
+      requireSlugUnlocked: changingSlug,
       slug: patch.slug ?? current.slug,
       title: patch.title ?? current.title,
       author_name: patch.authorName ?? current.author_name,
@@ -153,7 +158,16 @@ export async function updateShow(
     throw err;
   }
   if (!updated) {
-    // The version guard lost a race between our read and the UPDATE.
+    // Zero rows: either the version guard lost a race, or — on a slug change —
+    // a concurrent first-publish locked the slug after our in-memory check.
+    // Re-read to tell the two apart; the first-publish leaves version untouched,
+    // so slug_locked_at is the deciding signal.
+    if (changingSlug) {
+      const latest = await getShowById(db, id);
+      if (latest !== null && latest.slug_locked_at !== null) {
+        return { ok: false, error: "SLUG_LOCKED" };
+      }
+    }
     return { ok: false, error: "VERSION_CONFLICT" };
   }
 

@@ -273,13 +273,37 @@ export async function publishEpisode(deps: FeedSyncDeps, id: string): Promise<Pu
     return { ok: false, error: "SHOW_NOT_FEED_READY", details: { missing: readiness.missing } };
   }
 
-  // Publish at the current UTC time; the status guard means a concurrent
-  // publish loses cleanly, and the atomic version increment preserves any
-  // concurrent version bumps (section 9.1).
+  // Publish at the current UTC time, fenced on the version whose readiness we
+  // just validated: the status guard means a concurrent publish loses cleanly,
+  // and the version guard means a concurrent metadata PATCH that slipped in
+  // after missingPublishRequirements passed (bumping the version, e.g. blanking
+  // the description) changes zero rows rather than publishing a now-invalid
+  // episode (sections 12.2, 9.1).
   const nowIso = new Date().toISOString();
-  const published = await publishEpisodeRow(db, id, nowIso);
+  const published = await publishEpisodeRow(db, id, episode.version, nowIso);
   if (!published) {
-    return { ok: false, error: "EPISODE_ALREADY_PUBLISHED" };
+    // Lost the race between the readiness read and this write. Re-read so the
+    // caller sees what is actually true now, not a misleading
+    // EPISODE_ALREADY_PUBLISHED.
+    const latest = await getEpisodeById(db, id);
+    if (latest === null) {
+      return { ok: false, error: "NOT_FOUND" };
+    }
+    if (latest.status === "published") {
+      return { ok: false, error: "EPISODE_ALREADY_PUBLISHED" };
+    }
+    if (latest.status === "archived") {
+      return { ok: false, error: "EPISODE_NOT_PUBLISHABLE", details: { missing: ["status"] } };
+    }
+    // Still draft/unpublished but the version moved: a concurrent metadata
+    // change landed after readiness passed. Re-validate against the current row
+    // so the reported reason reflects reality (e.g. a blanked description).
+    const missingNow = await missingPublishRequirements(db, latest);
+    return {
+      ok: false,
+      error: "EPISODE_NOT_PUBLISHABLE",
+      details: { missing: missingNow.length > 0 ? missingNow : ["version"] },
+    };
   }
 
   // Slug lock is a guarded no-op after the first publication (section 9.1).

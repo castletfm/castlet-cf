@@ -151,19 +151,32 @@ export interface ShowMetadataUpdate {
   website_url: string | null;
   copyright_text: string | null;
   updated_at: string;
+  /**
+   * When true (the slug is actually changing), the write also requires
+   * `slug_locked_at IS NULL`. The version guard alone cannot fence this: a
+   * concurrent first-publish locks the slug WITHOUT bumping shows.version (see
+   * lockShowSlugStatement), so a slug change validated against an unlocked read
+   * could otherwise still overwrite a now-locked slug and break existing
+   * subscribers' feeds/{slug}.xml (section 12.1). Metadata-only edits leave
+   * this false so a description PATCH racing a first-publish still succeeds.
+   */
+  requireSlugUnlocked: boolean;
 }
 
 /**
  * Optimistic-concurrency show update (section 9.1): writes only when the
  * stored version equals the version the client last observed, and increments
  * the version. Every editable show column is feed-visible, so the feed
- * revision is incremented in the same statement. Returns false when no row
- * matched (missing row or version conflict).
+ * revision is incremented in the same statement. On a slug change the WHERE
+ * also fences on `slug_locked_at IS NULL` (see ShowMetadataUpdate). Returns
+ * false when no row matched (missing row, version conflict, or — on a slug
+ * change — the slug was locked by a concurrent first-publish).
  */
 export async function updateShowMetadata(
   db: D1Database,
   update: ShowMetadataUpdate,
 ): Promise<boolean> {
+  const slugLockGuard = update.requireSlugUnlocked ? " AND slug_locked_at IS NULL" : "";
   const result = await db
     .prepare(
       `UPDATE shows SET
@@ -171,7 +184,7 @@ export async function updateShowMetadata(
          description = ?, language = ?, category_primary = ?, category_secondary = ?,
          explicit = ?, website_url = ?, copyright_text = ?,
          feed_revision = feed_revision + 1, version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ?`,
+       WHERE id = ? AND version = ?${slugLockGuard}`,
     )
     .bind(
       update.slug,
@@ -466,22 +479,27 @@ export async function updateEpisodeMetadata(
 /**
  * Publishes an episode (section 12.3): sets the publish timestamp and status
  * in one guarded statement. The status guard means exactly one concurrent
- * publish can win, and `version = version + 1` is an atomic increment, so a
- * concurrent metadata PATCH's version bump is never clobbered. Returns false
- * when no row matched (missing, already published, or archived).
+ * publish can win. The `version = ?` guard fences the write on the exact
+ * version whose publish-readiness was validated (section 12.2), so a
+ * concurrent metadata PATCH that slips in after the readiness check — bumping
+ * the version and, say, blanking the description — changes zero rows here
+ * instead of publishing a now-invalid episode. `version = version + 1` is an
+ * atomic increment. Returns false when no row matched (missing, already
+ * published, archived, or the validated version was superseded).
  */
 export async function publishEpisodeRow(
   db: D1Database,
   id: string,
+  expectedVersion: number,
   publishedAt: string,
 ): Promise<boolean> {
   const result = await db
     .prepare(
       `UPDATE episodes
        SET status = 'published', published_at = ?, version = version + 1, updated_at = ?
-       WHERE id = ? AND status IN ('draft', 'unpublished')`,
+       WHERE id = ? AND version = ? AND status IN ('draft', 'unpublished')`,
     )
-    .bind(publishedAt, publishedAt, id)
+    .bind(publishedAt, publishedAt, id, expectedVersion)
     .run();
   return result.meta.changes > 0;
 }
