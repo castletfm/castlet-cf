@@ -774,12 +774,17 @@ export async function purgeStorageObject(
         return { ok: true };
       }
       // Pending object whose intent already left 'initiated' (its reservation
-      // was released then): just remove the object.
-      await media.delete(object.object_key);
+      // was released then). Claim the row terminally 'deleted' BEFORE touching
+      // R2: activation requires status='pending' (activateStorageObjectStatement),
+      // so if a concurrent completeUpload activates this object in the window,
+      // the guarded claim changes zero rows and we return WITHOUT deleting a now
+      // -live object's bytes. Deleting R2 first would irreversibly destroy the
+      // media of an object completion is about to make active.
       const claimed = await claimStorageObjectPurge(db, id, "pending", nowIso);
       if (!claimed) {
         return { ok: false, error: "ALREADY_PURGED" };
       }
+      await media.delete(object.object_key);
       return { ok: true };
     }
   }

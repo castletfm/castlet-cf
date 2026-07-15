@@ -7,6 +7,7 @@ import type {
   ShowResource,
   UploadInitiateResponse,
 } from "../../src/shared/contracts";
+import { purgeStorageObject } from "../../src/worker/domain/storage";
 import {
   BASE,
   createAuthContext,
@@ -234,6 +235,51 @@ describe("DELETE /api/storage/{id}", () => {
     expect((await objectRow(initiated.storageObjectId)).status).toBe("deleted");
     expect(await env.MEDIA.head(key)).toBeNull();
     expect(await usage()).toEqual(before); // reservation released, active untouched
+  });
+
+  it("never deletes R2 media when a pending object is activated during the purge", async () => {
+    // Reproduces the purge-vs-complete race: purge must claim the row terminally
+    // 'deleted' BEFORE touching R2, so a concurrent completeUpload that activates
+    // the object (pending -> active) makes the guarded claim match zero rows and
+    // the media is preserved. (Deleting R2 first would destroy now-live media.)
+    const initiated = await initiateAudio(64);
+    const objId = initiated.storageObjectId;
+    const key = (await objectRow(objId)).object_key;
+    await env.MEDIA.put(key, mp3Bytes(64), { httpMetadata: { contentType: "audio/mpeg" } });
+    // Intent leaves 'initiated' so purge reaches the pending else-branch.
+    await env.DB.prepare("UPDATE upload_intents SET status = 'completed' WHERE id = ?")
+      .bind(initiated.uploadId)
+      .run();
+
+    // Wrap DB so the object is activated by a "concurrent completion" the instant
+    // the purge claim (UPDATE ... SET status = 'deleted') runs.
+    const raceDb = {
+      prepare(sql: string) {
+        const stmt = env.DB.prepare(sql);
+        if (sql.includes("status = 'deleted'") && sql.includes("storage_objects")) {
+          return {
+            bind(...args: unknown[]) {
+              const bound = (stmt.bind as (...a: unknown[]) => D1PreparedStatement)(...args);
+              return {
+                async run() {
+                  await env.DB.prepare("UPDATE storage_objects SET status = 'active' WHERE id = ?")
+                    .bind(objId)
+                    .run();
+                  return bound.run();
+                },
+              };
+            },
+          };
+        }
+        return stmt;
+      },
+    } as unknown as D1Database;
+
+    const result = await purgeStorageObject({ db: raceDb, media: env.MEDIA }, objId);
+    expect(result.ok).toBe(false);
+    // The object won activation; its R2 media must still be intact.
+    expect(await env.MEDIA.head(key)).not.toBeNull();
+    expect((await objectRow(objId)).status).toBe("active");
   });
 
   it("returns 404 for an unknown object id", async () => {
