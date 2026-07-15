@@ -5,13 +5,12 @@ import type { Env as WorkerEnv } from "../src/worker/env";
 declare global {
   namespace Cloudflare {
     // Bindings available via `import { env } from "cloudflare:test"`.
-    // Keep in sync with the miniflare options in vitest.config.ts. The
-    // analytics dataset is not bound in tests yet; later phases add it when
-    // routes start using it.
+    // Keep in sync with the miniflare options in vitest.config.ts.
     interface Env extends Pick<
       WorkerEnv,
       | "DB"
       | "MEDIA"
+      | "DELIVERY_ANALYTICS"
       | "PUBLIC_BASE_URL"
       | "R2_ACCOUNT_ID"
       | "R2_BUCKET_NAME"
