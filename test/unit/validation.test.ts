@@ -59,11 +59,20 @@ describe("showCreateSchema", () => {
     expect(parsed.explicit).toBe(false);
   });
 
+  it("accepts an HTTPS ASCII website URL", () => {
+    expect(
+      showCreateSchema.safeParse({ ...validShow, websiteUrl: "https://example.com/show" }).success,
+    ).toBe(true);
+  });
+
   it.each([
     ["bad email", { ownerEmail: "not-an-email" }],
     ["unknown category", { categoryPrimary: "Podcasting" }],
     ["bad language tag", { language: "english language" }],
     ["non-http URL", { websiteUrl: "ftp://example.com/feed" }],
+    // Section 13.2: public URLs must be HTTPS and ASCII-only.
+    ["http:// URL", { websiteUrl: "http://example.com/feed" }],
+    ["non-ASCII URL", { websiteUrl: "https://example.com/café" }],
     ["malformed URL", { websiteUrl: "not a url" }],
     ["empty title", { title: "   " }],
     ["bad slug", { slug: "Bad Slug" }],

@@ -55,7 +55,17 @@ export const languageSchema = z
   .regex(/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/, "Expected a language tag such as en, ja, or en-US");
 
 const emailSchema = z.email().max(254);
-const httpUrlSchema = z.url({ protocol: /^https?$/ }).max(2000);
+
+/**
+ * Public URLs (websiteUrl) must be absolute HTTPS and printable-ASCII
+ * (section 13.2), because they are emitted verbatim into the public feed.
+ * http:// and non-ASCII URLs are rejected at write time so a stored value
+ * can never produce a non-compliant channel <link>.
+ */
+const httpUrlSchema = z
+  .url({ protocol: /^https$/ })
+  .max(2000)
+  .regex(/^[\x21-\x7e]+$/, "URL must be HTTPS and ASCII-only");
 
 const titleSchema = z.string().trim().min(1).max(500);
 const personNameSchema = z.string().trim().min(1).max(200);

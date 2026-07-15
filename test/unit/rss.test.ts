@@ -210,6 +210,33 @@ describe("buildRssFeed", () => {
     expect(second).toBeGreaterThan(first);
   });
 
+  it.each([
+    ["a non-HTTPS website URL", "http://example.com/"],
+    ["a non-ASCII website URL", "https://xn--r8jz45g.example/café"],
+    ["an unparseable website URL", "not a url"],
+  ])("falls back to the base URL for %s in the channel link", (_name, websiteUrl) => {
+    const xml = buildRssFeed({
+      show: showInput({ websiteUrl }),
+      episodes: [],
+      publicBaseUrl: BASE_URL,
+      generatedAt: new Date("2026-07-15T12:00:00.000Z"),
+    });
+    // Section 13.2: public URLs must be absolute HTTPS and ASCII. A stored
+    // value that violates that yields the base-URL default link, never raw.
+    expect(xml).toContain(`<link>${BASE_URL}/</link>`);
+    expect(xml).not.toContain(`<link>${websiteUrl}</link>`);
+  });
+
+  it("emits a compliant HTTPS+ASCII website URL as the channel link", () => {
+    const xml = buildRssFeed({
+      show: showInput({ websiteUrl: "https://example.invalid/" }),
+      episodes: [],
+      publicBaseUrl: BASE_URL,
+      generatedAt: new Date("2026-07-15T12:00:00.000Z"),
+    });
+    expect(xml).toContain("<link>https://example.invalid/</link>");
+  });
+
   it("rejects a non-ASCII public URL", () => {
     expect(() =>
       buildRssFeed({

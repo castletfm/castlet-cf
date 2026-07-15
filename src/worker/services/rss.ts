@@ -92,6 +92,28 @@ export function buildRssFeed(input: BuildFeedInput): string {
     return url;
   };
 
+  // Channel <link> is the one public URL sourced from operator free-text
+  // (show.websiteUrl) rather than the controlled base origin. Section 13.2
+  // requires public URLs to be absolute HTTPS and ASCII-only. Unlike the
+  // base-derived URLs above, a stored websiteUrl may predate or violate that
+  // rule, so fall back to the base origin (the default <link>, section 13.3)
+  // whenever the value is absent, not HTTPS, not ASCII, or unparseable —
+  // keeping the feed publishable and compliant rather than throwing.
+  const channelLink = (websiteUrl: string | null): string => {
+    const fallback = `${base}/`;
+    if (websiteUrl === null || !ASCII_URL.test(websiteUrl)) {
+      return fallback;
+    }
+    try {
+      if (new URL(websiteUrl).protocol !== "https:") {
+        return fallback;
+      }
+    } catch {
+      return fallback;
+    }
+    return websiteUrl;
+  };
+
   const items = input.episodes
     .filter((episode) => episode.status === "published")
     .sort((a, b) => {
@@ -110,7 +132,7 @@ export function buildRssFeed(input: BuildFeedInput): string {
     `  xmlns:atom="http://www.w3.org/2005/Atom">`,
     `  <channel>`,
     `    <title>${escapeXmlText(show.title)}</title>`,
-    `    <link>${escapeXmlText(show.websiteUrl ?? `${base}/`)}</link>`,
+    `    <link>${escapeXmlText(channelLink(show.websiteUrl))}</link>`,
     `    <language>${escapeXmlText(show.language)}</language>`,
     `    <description>${escapeXmlText(show.description)}</description>`,
     `    <atom:link href="${escapeXmlAttribute(absoluteUrl(`/feeds/${show.slug}.xml`))}" rel="self" type="application/rss+xml" />`,
