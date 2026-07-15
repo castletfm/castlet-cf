@@ -32,7 +32,7 @@ used by the upload phase), pnpm, ESLint, Prettier.
 
 ## Local setup
 
-Prerequisites: Node.js 20+ and pnpm 10.
+Prerequisites: Node.js 22+ and pnpm 10.
 
 ```bash
 pnpm install
