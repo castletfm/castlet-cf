@@ -37,6 +37,11 @@ export interface ShowRow {
   feed_published_revision: number;
   feed_last_generated_at: string | null;
   feed_error: string | null;
+  // Internal per-show feed-sync advisory lock (migration 0002); never mapped
+  // into an API resource. Held when the holder is non-null; the ISO expiry
+  // recovers a crashed holder. See acquireFeedSyncLock / releaseFeedSyncLock.
+  feed_sync_lock_holder: string | null;
+  feed_sync_lock_expires_at: string | null;
   slug_locked_at: string | null;
   version: number;
   created_at: string;
@@ -146,19 +151,32 @@ export interface ShowMetadataUpdate {
   website_url: string | null;
   copyright_text: string | null;
   updated_at: string;
+  /**
+   * When true (the slug is actually changing), the write also requires
+   * `slug_locked_at IS NULL`. The version guard alone cannot fence this: a
+   * concurrent first-publish locks the slug WITHOUT bumping shows.version (see
+   * lockShowSlugStatement), so a slug change validated against an unlocked read
+   * could otherwise still overwrite a now-locked slug and break existing
+   * subscribers' feeds/{slug}.xml (section 12.1). Metadata-only edits leave
+   * this false so a description PATCH racing a first-publish still succeeds.
+   */
+  requireSlugUnlocked: boolean;
 }
 
 /**
  * Optimistic-concurrency show update (section 9.1): writes only when the
  * stored version equals the version the client last observed, and increments
  * the version. Every editable show column is feed-visible, so the feed
- * revision is incremented in the same statement. Returns false when no row
- * matched (missing row or version conflict).
+ * revision is incremented in the same statement. On a slug change the WHERE
+ * also fences on `slug_locked_at IS NULL` (see ShowMetadataUpdate). Returns
+ * false when no row matched (missing row, version conflict, or — on a slug
+ * change — the slug was locked by a concurrent first-publish).
  */
 export async function updateShowMetadata(
   db: D1Database,
   update: ShowMetadataUpdate,
 ): Promise<boolean> {
+  const slugLockGuard = update.requireSlugUnlocked ? " AND slug_locked_at IS NULL" : "";
   const result = await db
     .prepare(
       `UPDATE shows SET
@@ -166,7 +184,7 @@ export async function updateShowMetadata(
          description = ?, language = ?, category_primary = ?, category_secondary = ?,
          explicit = ?, website_url = ?, copyright_text = ?,
          feed_revision = feed_revision + 1, version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ?`,
+       WHERE id = ? AND version = ?${slugLockGuard}`,
     )
     .bind(
       update.slug,
@@ -233,6 +251,126 @@ export async function incrementShowFeedRevision(
   updatedAt: string,
 ): Promise<void> {
   await incrementShowFeedRevisionStatement(db, showId, updatedAt).run();
+}
+
+/**
+ * Locks the show slug at first publication (section 9.1). The IS NULL guard
+ * makes the statement a no-op on every later publish, so it can be issued
+ * unconditionally. Like the feed-revision bump, it does not touch `version`:
+ * publishing an episode must not invalidate the operator's cached show
+ * version.
+ */
+export function lockShowSlugStatement(
+  db: D1Database,
+  showId: string,
+  lockedAt: string,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      "UPDATE shows SET slug_locked_at = ?, updated_at = ? WHERE id = ? AND slug_locked_at IS NULL",
+    )
+    .bind(lockedAt, lockedAt, showId);
+}
+
+/**
+ * Records a successful canonical feed write (section 12.3): the published
+ * revision catches up to the revision the XML was built from, the generation
+ * timestamp is refreshed, and any previous feed_error is cleared.
+ *
+ * Compare-and-set: the mark applies only while shows.feed_revision still equals
+ * the revision this sync built (bound as the guard). Under two concurrent
+ * same-show syncs this stops a sync that built a now-superseded revision from
+ * advancing feed_published_revision past a newer one — only the sync that built
+ * the current latest revision marks the feed synchronized. Returns false when
+ * the guard did not match (a newer feed_revision exists), meaning a newer sync
+ * is responsible for the mark.
+ *
+ * Scope: this is the revision guard on the mark itself. The practical race —
+ * two overlapping live syncs reordering their R2 PUTs — is now closed upstream
+ * by the per-show advisory lock (see acquireFeedSyncLock), which serializes
+ * build+PUT+mark so the PUTs cannot reorder. This compare-and-set is kept as
+ * defense in depth. The only residual is the narrow lock-expiry window: if a
+ * holder stalls past its lease and a second sync acquires the lock, the two
+ * can still overlap — a documented, bounded risk, not the everyday case.
+ */
+export async function markShowFeedSynchronized(
+  db: D1Database,
+  showId: string,
+  revision: number,
+  generatedAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE shows SET
+         feed_published_revision = ?, feed_last_generated_at = ?,
+         feed_error = NULL, updated_at = ?
+       WHERE id = ? AND feed_revision = ?`,
+    )
+    .bind(revision, generatedAt, generatedAt, showId, revision)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Acquires the per-show feed-sync advisory lock (migration 0002) with an atomic
+ * compare-and-set. D1 is single-writer SQLite, so this UPDATE either claims the
+ * lock — the row was free (holder NULL) or the previous holder's lease had
+ * expired (expiry < now) — or changes zero rows because a live holder still
+ * owns it. `expiresAt` bounds how long a crashed holder can block others.
+ * Returns true when this caller now holds the lock. Serializing build+PUT+mark
+ * behind this lock is what stops two same-show syncs from reordering their R2
+ * PUTs (section 12.3).
+ */
+export async function acquireFeedSyncLock(
+  db: D1Database,
+  showId: string,
+  nonce: string,
+  nowIso: string,
+  expiresAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE shows
+         SET feed_sync_lock_holder = ?, feed_sync_lock_expires_at = ?
+       WHERE id = ?
+         AND (feed_sync_lock_holder IS NULL OR feed_sync_lock_expires_at < ?)`,
+    )
+    .bind(nonce, expiresAt, showId, nowIso)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Releases the per-show feed-sync advisory lock. The holder guard makes this a
+ * no-op unless this caller still owns the lock, so a caller whose lease already
+ * expired (and was reclaimed by another sync) never clears the new holder.
+ */
+export async function releaseFeedSyncLock(
+  db: D1Database,
+  showId: string,
+  nonce: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE shows
+         SET feed_sync_lock_holder = NULL, feed_sync_lock_expires_at = NULL
+       WHERE id = ? AND feed_sync_lock_holder = ?`,
+    )
+    .bind(showId, nonce)
+    .run();
+}
+
+/** Stores a concise feed synchronization error (section 12.3). */
+export async function setShowFeedError(
+  db: D1Database,
+  showId: string,
+  error: string,
+  updatedAt: string,
+): Promise<void> {
+  await db
+    .prepare("UPDATE shows SET feed_error = ?, updated_at = ? WHERE id = ?")
+    .bind(error, updatedAt, showId)
+    .run();
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +474,88 @@ export async function updateEpisodeMetadata(
     )
     .run();
   return result.meta.changes > 0;
+}
+
+/**
+ * Publishes an episode (section 12.3): sets the publish timestamp and status
+ * in one guarded statement. The status guard means exactly one concurrent
+ * publish can win. The `version = ?` guard fences the write on the exact
+ * version whose publish-readiness was validated (section 12.2), so a
+ * concurrent metadata PATCH that slips in after the readiness check — bumping
+ * the version and, say, blanking the description — changes zero rows here
+ * instead of publishing a now-invalid episode. `version = version + 1` is an
+ * atomic increment. Returns false when no row matched (missing, already
+ * published, archived, or the validated version was superseded).
+ */
+export async function publishEpisodeRow(
+  db: D1Database,
+  id: string,
+  expectedVersion: number,
+  publishedAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE episodes
+       SET status = 'published', published_at = ?, version = version + 1, updated_at = ?
+       WHERE id = ? AND version = ? AND status IN ('draft', 'unpublished')`,
+    )
+    .bind(publishedAt, publishedAt, id, expectedVersion)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Unpublishes an episode (section 12.4): status only; GUID, media, and the
+ * original publish timestamp are retained. Returns false when no row matched.
+ */
+export async function unpublishEpisodeRow(
+  db: D1Database,
+  id: string,
+  updatedAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE episodes
+       SET status = 'unpublished', version = version + 1, updated_at = ?
+       WHERE id = ? AND status = 'published'`,
+    )
+    .bind(updatedAt, id)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/** Episode row joined with its active audio object's feed-relevant columns. */
+export interface FeedEpisodeRow extends EpisodeRow {
+  audio_public_path: string;
+  audio_content_type: string;
+  audio_byte_length: number;
+}
+
+/**
+ * Published episodes with their ACTIVE audio objects, newest first, capped
+ * (section 13.2). Uses idx_episodes_show_status_date; the id tiebreak keeps
+ * ordering stable when publish timestamps collide.
+ */
+export async function listPublishedEpisodesForFeed(
+  db: D1Database,
+  showId: string,
+  limit: number,
+): Promise<FeedEpisodeRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT e.*,
+              so.public_path AS audio_public_path,
+              so.content_type AS audio_content_type,
+              so.byte_length AS audio_byte_length
+       FROM episodes e
+       JOIN storage_objects so ON so.id = e.audio_object_id
+       WHERE e.show_id = ? AND e.status = 'published' AND so.status = 'active'
+       ORDER BY e.published_at DESC, e.id
+       LIMIT ?`,
+    )
+    .bind(showId, limit)
+    .all<FeedEpisodeRow>();
+  return result.results;
 }
 
 /**
@@ -675,4 +895,62 @@ export function attachEpisodeAudioStatement(
        WHERE id = ? AND audio_object_id IS ?`,
     )
     .bind(storageObjectId, durationSeconds, updatedAt, episodeId, expectedPreviousObjectId);
+}
+
+/**
+ * Feed-revision bump for a completed audio-replacement attach, guarded so it
+ * reflects the episode's status AT ATTACH TIME rather than a stale pre-attach
+ * read. Bumps the owning show's feed_revision only when, WITHIN THE SAME BATCH,
+ * the episode now points at the just-attached object AND is currently in a
+ * feed-visible status (`feedAffectingStatuses`). Batch this right after
+ * {@link attachEpisodeAudioStatement} so its EXISTS guard reads the attach's own
+ * write in the same transaction. That closes the window where a replacement
+ * completing while the episode is draft -- but concurrently published and
+ * synchronized against the OLD audio before the attach lands -- would leave the
+ * show reported synchronized while its published episode's active enclosure
+ * differs from what the feed serves (section 9.1). A lost attach leaves the
+ * episode pointing elsewhere, so the guard matches zero rows and no spurious
+ * bump occurs.
+ */
+export function bumpShowFeedRevisionOnEpisodeAudioAttachStatement(
+  db: D1Database,
+  showId: string,
+  episodeId: string,
+  attachedObjectId: string,
+  feedAffectingStatuses: readonly string[],
+  updatedAt: string,
+): D1PreparedStatement {
+  const placeholders = feedAffectingStatuses.map(() => "?").join(", ");
+  return db
+    .prepare(
+      `UPDATE shows SET feed_revision = feed_revision + 1, updated_at = ?
+       WHERE id = ? AND EXISTS (
+         SELECT 1 FROM episodes
+         WHERE id = ? AND show_id = ? AND audio_object_id = ?
+           AND status IN (${placeholders})
+       )`,
+    )
+    .bind(updatedAt, showId, episodeId, showId, attachedObjectId, ...feedAffectingStatuses);
+}
+
+/**
+ * Feed-revision bump for a completed show-artwork attach. Show artwork is always
+ * feed-visible, so this bumps whenever, within the same batch, the show now
+ * points at the just-attached artwork object (i.e. the attach landed). Batch
+ * this right after {@link attachShowArtworkStatement}; a lost attach leaves the
+ * show pointing elsewhere, so the guard matches zero rows and no spurious bump
+ * occurs.
+ */
+export function bumpShowFeedRevisionOnArtworkAttachStatement(
+  db: D1Database,
+  showId: string,
+  attachedObjectId: string,
+  updatedAt: string,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE shows SET feed_revision = feed_revision + 1, updated_at = ?
+       WHERE id = ? AND artwork_object_id = ?`,
+    )
+    .bind(updatedAt, showId, attachedObjectId);
 }

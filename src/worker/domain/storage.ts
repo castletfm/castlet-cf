@@ -11,6 +11,8 @@ import {
   activateStorageObjectStatement,
   attachEpisodeAudioStatement,
   attachShowArtworkStatement,
+  bumpShowFeedRevisionOnArtworkAttachStatement,
+  bumpShowFeedRevisionOnEpisodeAudioAttachStatement,
   claimCompletedUploadIntent,
   claimUploadIntent,
   countCompletedUploadsSince,
@@ -19,7 +21,6 @@ import {
   getShowById,
   getStorageObjectById,
   getUploadIntentById,
-  incrementShowFeedRevisionStatement,
   insertStorageObjectStatement,
   insertUploadIntentStatement,
   listExpiredInitiatedIntents,
@@ -114,10 +115,7 @@ const MIN_ARTWORK_PIXELS = 1400;
 const MAX_ARTWORK_PIXELS = 3000;
 
 /** Statuses whose episodes are (or were just) feed-visible (section 9.1). */
-const FEED_AFFECTING_EPISODE_STATUSES: ReadonlySet<EpisodeStatus> = new Set([
-  "published",
-  "unpublished",
-]);
+const FEED_AFFECTING_EPISODE_STATUSES: readonly EpisodeStatus[] = ["published", "unpublished"];
 
 /**
  * Upper bound on compare-and-set attach retries during completion. The
@@ -395,8 +393,10 @@ export async function completeUpload(
   // currently-observed attachment, and `readCurrentAttachment` re-reads it so
   // a lost race can retry against the truly-current value (see below).
   let previousObjectId: string | null;
-  let feedAffected: boolean;
-  let feedShowId: string;
+  // Builds the guarded feed-revision bump for this owner, batched with the
+  // winning attach so the feed-affecting decision reflects the owner's state AT
+  // ATTACH TIME (see the batch loop below and the statement docs in db.ts).
+  let buildFeedBump: () => D1PreparedStatement;
   let buildAttach: (expectedPreviousObjectId: string | null) => D1PreparedStatement;
   // Re-reads the owner during a lost-attach retry. The result distinguishes a
   // deleted owner (`exists: false`) from an owner that still exists but points
@@ -409,8 +409,10 @@ export async function completeUpload(
       return rejectUpload(deps, intent, object, "OWNER_NOT_FOUND");
     }
     previousObjectId = show.artwork_object_id;
-    feedAffected = true; // show artwork is always part of the feed
-    feedShowId = show.id;
+    // Show artwork is always part of the feed; the guard bumps once the attach
+    // has landed within the same batch.
+    buildFeedBump = () =>
+      bumpShowFeedRevisionOnArtworkAttachStatement(db, show.id, object.id, nowIso);
     buildAttach = (expectedPreviousObjectId) =>
       attachShowArtworkStatement(db, show.id, object.id, nowIso, expectedPreviousObjectId);
     readOwnerAttachment = async () => {
@@ -425,8 +427,22 @@ export async function completeUpload(
       return rejectUpload(deps, intent, object, "OWNER_NOT_FOUND");
     }
     previousObjectId = episode.audio_object_id;
-    feedAffected = FEED_AFFECTING_EPISODE_STATUSES.has(episode.status);
-    feedShowId = episode.show_id;
+    // The audio replacement is feed-affecting only if the episode is feed-
+    // visible AT ATTACH TIME. Deciding it here from the pre-attach read would be
+    // stale: a concurrent publish can flip the episode to published (and
+    // synchronize the feed against the OLD audio) between this read and the
+    // attach. The guarded bump re-checks the current status inside the winning
+    // attach batch, so a just-swapped enclosure never leaves the show reported
+    // synchronized against the old one (section 9.1).
+    buildFeedBump = () =>
+      bumpShowFeedRevisionOnEpisodeAudioAttachStatement(
+        db,
+        episode.show_id,
+        episode.id,
+        object.id,
+        FEED_AFFECTING_EPISODE_STATUSES,
+        nowIso,
+      );
     buildAttach = (expectedPreviousObjectId) =>
       attachEpisodeAudioStatement(
         db,
@@ -506,6 +522,11 @@ export async function completeUpload(
     if (displaced !== null && displaced !== object.id) {
       statements.push(orphanStorageObjectStatement(db, displaced, nowIso));
     }
+    // Bump the show's feed_revision in the SAME batch as the attach, guarded on
+    // the owner's post-attach state (see buildFeedBump). On a lost attach the
+    // guard changes zero rows, so only the winning batch bumps -- no new
+    // read-then-write window between the attach and the revision bump.
+    statements.push(buildFeedBump());
     const results = await db.batch(statements);
     activatePending = false;
     if ((results[attachIndex]?.meta.changes ?? 0) > 0) {
@@ -535,9 +556,6 @@ export async function completeUpload(
     // surface a conflict instead of looping forever.
     await orphanStorageObjectStatement(db, object.id, nowIso).run();
     return { ok: false, error: "ATTACH_CONFLICT" };
-  }
-  if (feedAffected) {
-    await incrementShowFeedRevisionStatement(db, feedShowId, nowIso).run();
   }
 
   const activated = await getStorageObjectById(db, object.id);
