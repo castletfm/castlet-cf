@@ -1,5 +1,5 @@
 /**
- * Shows screen (mvp-design.md section 16): list all shows, create a show, and
+ * Shows screen: list all shows, create a show, and
  * deactivate one with confirmation.
  */
 

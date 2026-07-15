@@ -1,5 +1,5 @@
 /**
- * Operator access-key verification (mvp-design.md section 10.1).
+ * Operator access-key verification.
  *
  * The submitted key is hashed with SHA-256 via Web Crypto and compared
  * against the stored lowercase hex digest (ADMIN_ACCESS_KEY_SHA256) as

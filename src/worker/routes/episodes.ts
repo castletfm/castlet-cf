@@ -25,7 +25,7 @@ import type { FeedSyncDeps } from "../services/feed-sync";
 import { readJsonBody, validationFailed } from "./common";
 
 /**
- * Episode management routes (mvp-design.md section 15.2). Show-scoped list
+ * Episode management routes. Show-scoped list
  * and draft creation are mounted at /api/shows, single-episode routes at
  * /api/episodes — both behind sessionAuth + csrfProtection.
  */

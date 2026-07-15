@@ -41,7 +41,7 @@ import {
 import { SIGNATURE_RANGE_BYTES, hasValidMediaSignature } from "../services/upload-verification";
 
 /**
- * Direct-upload business rules (mvp-design.md sections 10.4, 11, and 17).
+ * Direct-upload business rules.
  *
  * Lifecycle: initiate (reserve quota, pending object, initiated intent,
  * presigned PUT) -> browser PUT to R2 -> complete (verify, activate, attach)

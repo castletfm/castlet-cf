@@ -1,5 +1,5 @@
 /**
- * Dashboard (mvp-design.md section 16): storage counters against the ceiling,
+ * Dashboard: storage counters against the ceiling,
  * a prominent feed-dirty banner when D1 and R2 feed revisions differ, and the
  * most recent episodes.
  */

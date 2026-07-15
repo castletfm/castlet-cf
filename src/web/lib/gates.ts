@@ -1,6 +1,6 @@
 /**
  * Client-side validation gates that mirror the server's publish and feed
- * requirements (mvp-design.md sections 12.1 and 12.2).
+ * requirements.
  *
  * These gates only decide whether to *enable* an action in the UI so the
  * operator gets immediate feedback. The Worker repeats every check on publish

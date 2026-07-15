@@ -12,8 +12,8 @@ export const SESSION_COOKIE_NAME = "castlet_session";
 export const CSRF_COOKIE_NAME = "castlet_csrf";
 
 /**
- * API paths reachable without a session (mvp-design.md section 15, plus
- * /api/auth/config — see docs/engineering-notes.md).
+ * API paths reachable without a session: health, login, and /api/auth/config
+ * (the public Turnstile site key — see docs/security.md).
  */
 export const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/api/health",

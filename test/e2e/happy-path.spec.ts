@@ -6,7 +6,7 @@ import { expect, test, type Route } from "@playwright/test";
 import { TEST_ADMIN_ACCESS_KEY } from "../auth-constants";
 
 /**
- * Mandatory end-to-end happy path (mvp-design.md section 18.3), driven through
+ * Mandatory end-to-end happy path, driven through
  * the real admin SPA against a local `wrangler dev` (see start-dev.mjs):
  *
  *   log in (Turnstile TEST key) -> create show -> upload artwork ->

@@ -1,7 +1,6 @@
 /**
  * Accessible controlled form fields. Every input is associated with a real
- * <label> and can surface a per-field error and hint (mvp-design.md section 16
- * favors reliable, accessible forms over visual novelty).
+ * <label> and can surface a per-field error and hint.
  */
 
 import { useId, type ReactNode } from "react";

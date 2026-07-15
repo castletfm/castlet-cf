@@ -1,7 +1,7 @@
 /**
- * Conditional-request evaluation for the public feed and media routes
- * (mvp-design.md section 14.4): If-None-Match against the quoted R2
- * httpEtag, and If-Modified-Since against the R2 upload timestamp.
+ * Conditional-request evaluation for the public feed and media routes:
+ * If-None-Match against the quoted R2 httpEtag, and If-Modified-Since
+ * against the R2 upload timestamp.
  */
 
 export interface ConditionalHeaders {

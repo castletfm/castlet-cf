@@ -1,5 +1,5 @@
 /**
- * Episode editor (mvp-design.md section 16): metadata form (optimistic
+ * Episode editor: metadata form (optimistic
  * version, 409 → refetch), audio upload with progress, client-side publish
  * gating that the server re-checks, and publish/unpublish/delete with
  * confirmation for the destructive actions.

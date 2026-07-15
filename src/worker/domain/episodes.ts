@@ -20,9 +20,8 @@ import {
 import { checkShowFeedReady, synchronizeFeed, type FeedSyncDeps } from "../services/feed-sync";
 
 /**
- * Episode business rules (mvp-design.md sections 9.1, 12.2, 12.3, 12.4,
- * and 12.5), including publish/unpublish with synchronous canonical feed
- * regeneration.
+ * Episode business rules, including publish/unpublish with synchronous
+ * canonical feed regeneration.
  */
 
 export type EpisodeCreateInput = z.output<typeof episodeCreateSchema>;

@@ -4,7 +4,7 @@ import type { AppEnv } from "../app-env";
 import { errorResponse } from "../middleware/errors";
 
 /**
- * Development/test-only upload shim (mvp-design.md section 18.3).
+ * Development/test-only upload shim.
  *
  * The production upload path is browser -> presigned PUT -> R2 S3 endpoint
  * (`https://{account}.r2.cloudflarestorage.com/...`). A local `wrangler dev`

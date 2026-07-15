@@ -1,5 +1,5 @@
 /**
- * Client-side artwork image checks (mvp-design.md sections 11.1 and 16).
+ * Client-side artwork image checks.
  *
  * `checkArtworkDimensions` is a pure predicate. `readImageDimensions` reads the
  * pixel dimensions from a bounded prefix of the file's PNG/JPEG header without

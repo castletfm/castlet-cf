@@ -21,7 +21,7 @@ import { createPresignedPutUrl } from "../services/r2-signing";
 import { readJsonBody, validationFailed } from "./common";
 
 /**
- * Direct-upload routes (mvp-design.md sections 11.3, 11.5, and 15.2):
+ * Direct-upload routes:
  * POST /api/uploads, POST /api/uploads/{id}/complete, DELETE /api/uploads/{id}.
  * Mounted at /api/uploads behind sessionAuth + csrfProtection.
  */

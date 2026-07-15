@@ -96,7 +96,7 @@ export async function getConfig(): Promise<AuthConfig> {
 }
 
 // A 401 anywhere means the session expired; the app shell registers a handler
-// that returns the operator to the login screen (mvp-design.md section 16).
+// that returns the operator to the login screen.
 let unauthorizedHandler: (() => void) | null = null;
 
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
@@ -265,7 +265,7 @@ export async function deleteEpisode(id: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Uploads (mvp-design.md sections 11.3–11.5)
+// Uploads
 // ---------------------------------------------------------------------------
 
 export async function initiateUpload(body: UploadInitiateRequest): Promise<UploadInitiateResponse> {

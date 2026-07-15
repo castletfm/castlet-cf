@@ -67,8 +67,7 @@ export function App() {
     refreshSession();
   }, [refreshSession]);
 
-  // A 401 from any API call means the session expired: return to login
-  // (mvp-design.md section 16).
+  // A 401 from any API call means the session expired: return to login.
   useEffect(() => {
     setUnauthorizedHandler(() => {
       setNotice("Your session expired. Please log in again.");

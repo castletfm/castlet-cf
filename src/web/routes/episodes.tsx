@@ -1,5 +1,5 @@
 /**
- * Episodes screen (mvp-design.md section 16): list a show's episodes filtered
+ * Episodes screen: list a show's episodes filtered
  * by status and create a draft.
  */
 

@@ -1,4 +1,4 @@
--- Per-show feed-sync advisory lock (mvp-design.md sections 12.3, 13.1).
+-- Per-show feed-sync advisory lock.
 --
 -- synchronizeFeed() builds the RSS document, PUTs it to feeds/{slug}.xml, then
 -- marks the show synchronized. Two concurrent same-show syncs could physically

@@ -1,6 +1,6 @@
 /**
- * File-upload widgets for show artwork and episode audio (mvp-design.md
- * sections 11.1–11.5). Both run the browser direct-upload flow with XHR
+ * File-upload widgets for show artwork and episode audio. Both run the
+ * browser direct-upload flow with XHR
  * progress and repeat the server-enforced rules client-side for fast feedback.
  */
 

@@ -8,8 +8,7 @@ import { errorResponse } from "./errors";
 const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /**
- * CSRF and origin checks for authenticated state-changing requests
- * (mvp-design.md section 10.3):
+ * CSRF and origin checks for authenticated state-changing requests:
  *
  * - `Origin` must match PUBLIC_BASE_URL exactly;
  * - `Content-Type` must be application/json;

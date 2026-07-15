@@ -1,5 +1,5 @@
 /**
- * Turnstile Siteverify validation (mvp-design.md section 10.2, step 4).
+ * Turnstile Siteverify validation.
  *
  * Never log the Turnstile token or the secret key.
  */

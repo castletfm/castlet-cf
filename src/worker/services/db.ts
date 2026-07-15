@@ -9,7 +9,7 @@ import type {
 } from "../../shared/contracts";
 
 /**
- * Raw prepared D1 SQL helpers (mvp-design.md section 6: no ORM).
+ * Raw prepared D1 SQL helpers (no ORM).
  *
  * These functions are thin data access wrappers; business rules (slug
  * locking, status transitions, feed-revision policy) live in src/worker/domain.
@@ -723,7 +723,7 @@ export async function getStorageObjectById(
 }
 
 /**
- * ACTIVE storage object for a public path (mvp-design.md section 14.1).
+ * ACTIVE storage object for a public path.
  * public_path is UNIQUE, so this is an indexed point lookup; only active
  * objects are publicly servable (pending/orphaned/deleted/rejected are not).
  */

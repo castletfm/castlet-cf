@@ -1,5 +1,5 @@
 /**
- * HMAC-SHA256 signed session tokens (mvp-design.md section 10.2).
+ * HMAC-SHA256 signed session tokens.
  *
  * Token format: `base64url(JSON payload) + "." + base64url(HMAC-SHA256 signature)`.
  * The payload carries `iat`, `exp` (Unix seconds), and the CSRF token that

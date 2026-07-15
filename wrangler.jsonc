@@ -1,5 +1,5 @@
 // Cloudflare Worker configuration.
-// Template: mvp-design.md section 8. Identifiers (name, database_id, bucket) are
+// Identifiers (name, database_id, bucket) are
 // created during setup; replace REPLACE_ME values before deploying.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",

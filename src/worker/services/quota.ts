@@ -1,6 +1,5 @@
 /**
- * Atomic storage-quota accounting against the account_usage singleton row
- * (mvp-design.md sections 9.1 and 17, items 1-3).
+ * Atomic storage-quota accounting against the account_usage singleton row.
  *
  * Every mutation is a single conditional UPDATE so concurrent requests can
  * never overshoot the ceiling through a read-modify-write race: the quota

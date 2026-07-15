@@ -6,7 +6,7 @@ import { errorResponse } from "../middleware/errors";
 import { queryEpisodeDeliveryTotals, resolveAnalyticsWindow } from "../services/analytics-query";
 
 /**
- * GET /api/analytics/episodes (mvp-design.md section 15.2): aggregated
+ * GET /api/analytics/episodes: aggregated
  * request and byte metrics from the Analytics Engine SQL API. Degrades
  * gracefully: without a configured token (tests, local dev) it reports
  * `available: false` with 200; an unreachable or failing SQL API is a 502
