@@ -19,40 +19,59 @@ export default defineConfig(async () => {
   );
 
   return {
-    plugins: [
-      cloudflareTest({
-        main: "./src/worker/index.ts",
-        miniflare: {
-          compatibilityDate: "2026-07-15",
-          d1Databases: ["DB"],
-          r2Buckets: ["MEDIA"],
-          analyticsEngineDatasets: { DELIVERY_ANALYTICS: { dataset: "podcast_delivery" } },
-          bindings: {
-            PUBLIC_BASE_URL: "http://example.com",
-            R2_ACCOUNT_ID: "test-account",
-            R2_BUCKET_NAME: "castlet-media-test",
-            MAX_TOTAL_STORAGE_BYTES: "9126805504",
-            MAX_AUDIO_BYTES: "262144000",
-            MAX_ARTWORK_BYTES: "10485760",
-            UPLOAD_URL_TTL_SECONDS: "900",
-            SESSION_TTL_SECONDS: "43200",
-            TURNSTILE_SITE_KEY: "test-site-key",
-            // Test-only secret values (see test/auth-constants.ts).
-            ADMIN_ACCESS_KEY_SHA256: TEST_ADMIN_ACCESS_KEY_SHA256,
-            SESSION_SIGNING_KEY: TEST_SESSION_SIGNING_KEY,
-            TURNSTILE_SECRET_KEY: TEST_TURNSTILE_SECRET_KEY,
-            // Dummy R2 SigV4 credentials: presigned URLs are generated (and
-            // parsed by tests) but never sent to a real S3 endpoint.
-            R2_ACCESS_KEY_ID: "test-r2-access-key-id",
-            R2_SECRET_ACCESS_KEY: "test-r2-secret-access-key",
-            TEST_MIGRATIONS: migrations,
+    test: {
+      // Two projects so the Worker tests keep their workerd pool while the SPA
+      // unit tests (pure logic: byte formatting, publish/feed gates, image
+      // dimension checks, upload state machine) run in a plain Node env.
+      projects: [
+        {
+          plugins: [
+            cloudflareTest({
+              main: "./src/worker/index.ts",
+              miniflare: {
+                compatibilityDate: "2026-07-15",
+                d1Databases: ["DB"],
+                r2Buckets: ["MEDIA"],
+                analyticsEngineDatasets: {
+                  DELIVERY_ANALYTICS: { dataset: "podcast_delivery" },
+                },
+                bindings: {
+                  PUBLIC_BASE_URL: "http://example.com",
+                  R2_ACCOUNT_ID: "test-account",
+                  R2_BUCKET_NAME: "castlet-media-test",
+                  MAX_TOTAL_STORAGE_BYTES: "9126805504",
+                  MAX_AUDIO_BYTES: "262144000",
+                  MAX_ARTWORK_BYTES: "10485760",
+                  UPLOAD_URL_TTL_SECONDS: "900",
+                  SESSION_TTL_SECONDS: "43200",
+                  TURNSTILE_SITE_KEY: "test-site-key",
+                  // Test-only secret values (see test/auth-constants.ts).
+                  ADMIN_ACCESS_KEY_SHA256: TEST_ADMIN_ACCESS_KEY_SHA256,
+                  SESSION_SIGNING_KEY: TEST_SESSION_SIGNING_KEY,
+                  TURNSTILE_SECRET_KEY: TEST_TURNSTILE_SECRET_KEY,
+                  // Dummy R2 SigV4 credentials: presigned URLs are generated
+                  // (and parsed by tests) but never sent to a real S3 endpoint.
+                  R2_ACCESS_KEY_ID: "test-r2-access-key-id",
+                  R2_SECRET_ACCESS_KEY: "test-r2-secret-access-key",
+                  TEST_MIGRATIONS: migrations,
+                },
+              },
+            }),
+          ],
+          test: {
+            name: "worker",
+            include: ["test/**/*.test.ts"],
+            setupFiles: ["./test/setup.ts"],
           },
         },
-      }),
-    ],
-    test: {
-      include: ["test/**/*.test.ts"],
-      setupFiles: ["./test/setup.ts"],
+        {
+          test: {
+            name: "web",
+            environment: "node",
+            include: ["src/web/**/*.test.ts", "src/web/**/*.test.tsx"],
+          },
+        },
+      ],
     },
   };
 });
