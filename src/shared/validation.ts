@@ -1,9 +1,21 @@
 import { z } from "zod";
 
+import { containsInvalidXmlChar } from "../worker/services/xml";
+
 /**
  * Zod schemas shared by the Worker API and the admin SPA.
  * Validation rules come from mvp-design.md sections 9.1, 12.1, and 12.2.
  */
+
+/**
+ * Rejects text that carries a character XML 1.0 cannot represent (e.g. a C0
+ * control such as U+0001). Every field this guards becomes feed text, so a
+ * stored bad character would otherwise make the RSS builder throw at publish
+ * time. Reusing the builder's matcher keeps write-time validation and feed
+ * generation in exact agreement about which characters are invalid.
+ */
+const XML_TEXT_MESSAGE = "Text must not contain characters that are invalid in XML 1.0";
+const isXmlSafeText = (value: string): boolean => !containsInvalidXmlChar(value);
 
 /**
  * Show slug rule (section 9.1): lowercase ASCII, begins with a letter or
@@ -55,12 +67,35 @@ export const languageSchema = z
   .regex(/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/, "Expected a language tag such as en, ja, or en-US");
 
 const emailSchema = z.email().max(254);
-const httpUrlSchema = z.url({ protocol: /^https?$/ }).max(2000);
 
-const titleSchema = z.string().trim().min(1).max(500);
-const personNameSchema = z.string().trim().min(1).max(200);
-const showDescriptionSchema = z.string().trim().min(1).max(4000);
-const copyrightSchema = z.string().trim().min(1).max(500);
+/**
+ * Public URLs (websiteUrl) must be an absolute HTTPS URL in strict
+ * authority form (`https://host…`) and printable-ASCII (section 13.2),
+ * because they are emitted into the public feed. The regex requires the
+ * literal `https://` with a non-empty host, so scheme-only spellings that
+ * Zod's URL parser still accepts — `https:example.com`, `https:/example.com`,
+ * `https:///path` — are rejected at write time. http:// and non-ASCII URLs
+ * are rejected too, so a stored value can never produce a non-compliant
+ * channel <link>. First host character excludes `/` (0x2f) to forbid an
+ * empty host.
+ */
+const httpUrlSchema = z
+  .url({ protocol: /^https$/ })
+  .max(2000)
+  .regex(
+    /^https:\/\/[\x21-\x2e\x30-\x7e][\x21-\x7e]*$/,
+    "URL must be an absolute https:// URL with a host, using ASCII characters only",
+  );
+
+const titleSchema = z.string().trim().min(1).max(500).refine(isXmlSafeText, XML_TEXT_MESSAGE);
+const personNameSchema = z.string().trim().min(1).max(200).refine(isXmlSafeText, XML_TEXT_MESSAGE);
+const showDescriptionSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(4000)
+  .refine(isXmlSafeText, XML_TEXT_MESSAGE);
+const copyrightSchema = z.string().trim().min(1).max(500).refine(isXmlSafeText, XML_TEXT_MESSAGE);
 
 /** Optimistic-concurrency version observed by the client (section 9.1). */
 const versionSchema = z.number().int().min(1);
@@ -112,7 +147,7 @@ export const episodeTypeSchema = z.enum(["full", "bonus", "trailer"]);
  */
 export const episodeCreateSchema = z.strictObject({
   title: titleSchema,
-  description: z.string().trim().max(4000).default(""),
+  description: z.string().trim().max(4000).refine(isXmlSafeText, XML_TEXT_MESSAGE).default(""),
   episodeType: episodeTypeSchema.default("full"),
   explicit: z.boolean().default(false),
   seasonNumber: z.number().int().min(1).nullish(),
@@ -123,7 +158,7 @@ export const episodePatchSchema = z
   .strictObject({
     version: versionSchema,
     title: titleSchema.optional(),
-    description: z.string().trim().max(4000).optional(),
+    description: z.string().trim().max(4000).refine(isXmlSafeText, XML_TEXT_MESSAGE).optional(),
     episodeType: episodeTypeSchema.optional(),
     explicit: z.boolean().optional(),
     seasonNumber: z.number().int().min(1).nullable().optional(),

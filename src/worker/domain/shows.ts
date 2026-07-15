@@ -11,6 +11,7 @@ import {
   updateShowMetadata,
   type ShowRow,
 } from "../services/db";
+import { synchronizeFeed, type FeedSyncDeps } from "../services/feed-sync";
 
 /**
  * Show business rules (mvp-design.md sections 9.1, 12.1, 12.5).
@@ -45,6 +46,9 @@ export function showRowToResource(row: ShowRow): ShowResource {
     feedPublishedRevision: row.feed_published_revision,
     feedLastGeneratedAt: row.feed_last_generated_at,
     feedError: row.feed_error,
+    // Synchronized iff the canonical R2 feed was built from the current
+    // revision and the last write succeeded (section 9.1).
+    feedSynchronized: row.feed_published_revision === row.feed_revision && row.feed_error === null,
     slugLockedAt: row.slug_locked_at,
     version: row.version,
     createdAt: row.created_at,
@@ -74,6 +78,8 @@ export async function createShow(db: D1Database, input: ShowCreateInput): Promis
     feed_published_revision: 0,
     feed_last_generated_at: null,
     feed_error: null,
+    feed_sync_lock_holder: null,
+    feed_sync_lock_expires_at: null,
     slug_locked_at: null,
     version: 1,
     created_at: now,
@@ -105,12 +111,16 @@ export async function updateShow(
     return { ok: false, error: "VERSION_CONFLICT" };
   }
 
-  if (patch.slug !== undefined && patch.slug !== current.slug) {
+  const changingSlug = patch.slug !== undefined && patch.slug !== current.slug;
+  if (changingSlug) {
+    // changingSlug guarantees patch.slug is defined; the ?? keeps the type
+    // string without a non-null assertion (same pattern as the write below).
+    const nextSlug = patch.slug ?? current.slug;
     // Slug is immutable once locked at first publish (section 9.1).
     if (current.slug_locked_at !== null) {
       return { ok: false, error: "SLUG_LOCKED" };
     }
-    const taken = await getShowBySlug(db, patch.slug);
+    const taken = await getShowBySlug(db, nextSlug);
     if (taken !== null && taken.id !== id) {
       return { ok: false, error: "SLUG_TAKEN" };
     }
@@ -122,6 +132,10 @@ export async function updateShow(
     updated = await updateShowMetadata(db, {
       id,
       expectedVersion: patch.version,
+      // On a slug change the write is fenced on slug_locked_at IS NULL so a
+      // concurrent first-publish (which locks the slug without bumping version)
+      // cannot slip past the in-memory check above (section 12.1).
+      requireSlugUnlocked: changingSlug,
       slug: patch.slug ?? current.slug,
       title: patch.title ?? current.title,
       author_name: patch.authorName ?? current.author_name,
@@ -147,11 +161,53 @@ export async function updateShow(
     throw err;
   }
   if (!updated) {
-    // The version guard lost a race between our read and the UPDATE.
+    // Zero rows: either the version guard lost a race, or — on a slug change —
+    // a concurrent first-publish locked the slug after our in-memory check.
+    // Re-read to tell the two apart; the first-publish leaves version untouched,
+    // so slug_locked_at is the deciding signal.
+    if (changingSlug) {
+      const latest = await getShowById(db, id);
+      if (latest !== null && latest.slug_locked_at !== null) {
+        return { ok: false, error: "SLUG_LOCKED" };
+      }
+    }
     return { ok: false, error: "VERSION_CONFLICT" };
   }
 
   const row = await getShowById(db, id);
+  if (row === null) {
+    return { ok: false, error: "NOT_FOUND" };
+  }
+  return { ok: true, show: row };
+}
+
+export type RegenerateFeedResult =
+  | { ok: true; show: ShowRow }
+  | {
+      ok: false;
+      error: "NOT_FOUND" | "SHOW_NOT_FEED_READY" | "FEED_WRITE_FAILED";
+      details?: Record<string, unknown>;
+    };
+
+/**
+ * POST /api/shows/{id}/regenerate-feed (section 15.2): re-runs canonical
+ * feed synchronization for a feed-ready show. This is the retry path after a
+ * stored feed_error, and it is also allowed when the revisions already match
+ * (an idempotent regenerate).
+ */
+export async function regenerateShowFeed(
+  deps: FeedSyncDeps,
+  id: string,
+): Promise<RegenerateFeedResult> {
+  const sync = await synchronizeFeed(deps, id);
+  if (!sync.ok) {
+    if (sync.error === "SHOW_NOT_FEED_READY") {
+      return { ok: false, error: sync.error, details: { missing: sync.missing } };
+    }
+    return { ok: false, error: sync.error };
+  }
+
+  const row = await getShowById(deps.db, id);
   if (row === null) {
     return { ok: false, error: "NOT_FOUND" };
   }
