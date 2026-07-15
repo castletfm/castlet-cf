@@ -115,7 +115,11 @@ export async function checkShowFeedReady(db: D1Database, show: ShowRow): Promise
 }
 
 export type FeedSyncResult =
-  | { ok: true; revision: number }
+  // `synchronized` is false when the R2 feed was written but a concurrent
+  // feed-affecting change bumped feed_revision past the built revision before
+  // the mark landed: the write succeeded but the feed is already dirty and will
+  // re-sync on the next publish/unpublish or explicit regenerate.
+  | { ok: true; revision: number; synchronized: boolean }
   | { ok: false; error: "NOT_FOUND" }
   | { ok: false; error: "SHOW_NOT_FEED_READY"; missing: string[] }
   | { ok: false; error: "FEED_WRITE_FAILED" };
@@ -261,6 +265,20 @@ async function synchronizeFeedLocked(deps: FeedSyncDeps, showId: string): Promis
   // revision only while feed_revision still equals builtRevision. Under the
   // lock builtRevision is the current revision; the guard remains as defense in
   // depth against the narrow lock-expiry overlap window.
-  await markShowFeedSynchronized(db, show.id, builtRevision, nowIso);
-  return { ok: true, revision: builtRevision };
+  const marked = await markShowFeedSynchronized(db, show.id, builtRevision, nowIso);
+  if (!marked) {
+    // The mark changed no row: a concurrent feed-affecting change bumped
+    // feed_revision past builtRevision (or, in the narrow lock-expiry overlap,
+    // another sync advanced it) after we built and wrote this feed. The write
+    // still succeeded, so the publish is not failed; but feed_published_revision
+    // stays behind feed_revision, which the dashboard surfaces as a feed-dirty
+    // banner and the next publish/unpublish or explicit regenerate re-syncs.
+    // Log it so a persistently dirty feed is diagnosable rather than silently
+    // swallowed here.
+    console.warn(
+      `feed sync for show ${show.id} superseded before mark ` +
+        `(built revision ${builtRevision}); feed left dirty for re-sync`,
+    );
+  }
+  return { ok: true, revision: builtRevision, synchronized: marked };
 }
