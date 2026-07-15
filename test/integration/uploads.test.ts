@@ -398,6 +398,48 @@ describe("POST /api/uploads", () => {
     }
   });
 
+  it("never exceeds the outstanding-intent limit under concurrent initiation", async () => {
+    // With 19 intents already outstanding, two near-simultaneous initiations
+    // both pass the pre-count read (both see 19). The old check-then-insert
+    // would let both write, reaching 21; the guarded insert admits only one.
+    const before = await usage();
+    const cleanup = await seedIntents(19, "initiated");
+    try {
+      const [a, b] = await Promise.all([
+        initiate(audioInitiateBody()),
+        initiate(audioInitiateBody()),
+      ]);
+      expect([a.status, b.status].sort()).toEqual([201, 429]);
+
+      const loser = a.status === 429 ? a : b;
+      expect(((await loser.json()) as ErrorBody).error.code).toBe("TOO_MANY_PENDING_UPLOADS");
+
+      const outstanding = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM upload_intents WHERE status = 'initiated' AND expires_at > ?",
+      )
+        .bind(new Date().toISOString())
+        .first<{ n: number }>();
+      expect(outstanding?.n).toBe(20);
+
+      // The refused request left no orphan pending object behind (19 seeded +
+      // 1 winner), and released the bytes it had reserved.
+      const pending = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM storage_objects WHERE status = 'pending'",
+      ).first<{ n: number }>();
+      expect(pending?.n).toBe(20);
+      expect((await usage()).reserved_bytes - before.reserved_bytes).toBe(64);
+    } finally {
+      // Abort the winner so its reservation is released before cleanup.
+      const winnerIntent = await env.DB.prepare(
+        "SELECT id FROM upload_intents WHERE status = 'initiated' AND id NOT LIKE 'seed-int-%'",
+      ).first<{ id: string }>();
+      if (winnerIntent !== null) {
+        await abort(winnerIntent.id);
+      }
+      await cleanup();
+    }
+  });
+
   it("rejects a reservation that would exceed the storage quota", async () => {
     const before = await usage();
     const max = Number(env.MAX_TOTAL_STORAGE_BYTES);
@@ -605,6 +647,54 @@ describe("POST /api/uploads/{id}/complete", () => {
     const after = await usage();
     expect(after.reserved_bytes).toBe(before.reserved_bytes);
     expect(after.active_bytes - before.active_bytes).toBe(64);
+  });
+
+  it("never exceeds the daily completed-upload limit under concurrent completion", async () => {
+    // 19 uploads already completed today. Two more are initiated (both pass
+    // the initiation pre-check, since neither is completed yet) and then
+    // completed near-simultaneously. The old unguarded claim would let both
+    // complete, reaching 21; the guarded claim admits only the 20th.
+    const before = await usage();
+    // Earlier tests in this suite share the DB and leave real completed
+    // intents; clear them so exactly 19 completed rows exist for the boundary.
+    await env.DB.prepare("DELETE FROM upload_intents WHERE status = 'completed'").run();
+    const cleanup = await seedIntents(19, "completed");
+    try {
+      const first = await initiateOk(audioInitiateBody({ size: 64 }));
+      const second = await initiateOk(audioInitiateBody({ size: 64 }));
+      const firstKey = await putObject(first.storageObjectId, mp3Bytes(64), "audio/mpeg");
+      const secondKey = await putObject(second.storageObjectId, mp3Bytes(64), "audio/mpeg");
+
+      const [a, b] = await Promise.all([complete(first.uploadId), complete(second.uploadId)]);
+      expect([a.status, b.status].sort()).toEqual([200, 429]);
+
+      const loserRes = a.status === 429 ? a : b;
+      expect(((await loserRes.json()) as ErrorBody).error.code).toBe("DAILY_UPLOAD_LIMIT_REACHED");
+
+      const completedToday = await env.DB.prepare(
+        "SELECT COUNT(*) AS n FROM upload_intents WHERE status = 'completed' AND completed_at >= ?",
+      )
+        .bind(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`)
+        .first<{ n: number }>();
+      expect(completedToday?.n).toBe(20);
+
+      // Winner activated; loser cleaned up like a rejection (intent rejected,
+      // object deleted from R2, reservation released).
+      const winner = a.status === 429 ? second : first;
+      const loser = a.status === 429 ? first : second;
+      const loserKey = a.status === 429 ? firstKey : secondKey;
+      expect((await objectRow(winner.storageObjectId)).status).toBe("active");
+      expect((await intentRow(loser.uploadId)).status).toBe("rejected");
+      expect((await objectRow(loser.storageObjectId)).status).toBe("rejected");
+      expect(await env.MEDIA.head(loserKey)).toBeNull();
+      // Exactly one upload's 64 bytes moved to active; the loser's reservation
+      // was released, leaving reserved_bytes unchanged from the start.
+      const after = await usage();
+      expect(after.reserved_bytes).toBe(before.reserved_bytes);
+      expect(after.active_bytes - before.active_bytes).toBe(64);
+    } finally {
+      await cleanup();
+    }
   });
 
   it("returns 404 for an unknown upload id", async () => {

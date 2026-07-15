@@ -10,6 +10,7 @@ import {
   activateStorageObjectStatement,
   attachEpisodeAudioStatement,
   attachShowArtworkStatement,
+  claimCompletedUploadIntent,
   claimUploadIntent,
   countCompletedUploadsSince,
   countOutstandingUploadIntents,
@@ -189,7 +190,10 @@ export async function initiateUpload(
   const now = new Date();
   const nowIso = now.toISOString();
 
-  // Abuse limits (section 17, items 5 and 6).
+  // Abuse limits (section 17, items 5 and 6). These pre-checks are fast
+  // rejects only; the outstanding cap's source of truth is the guarded insert
+  // below, and the daily cap's is the guarded completion claim (see
+  // completeUpload), so a concurrent request cannot slip past.
   const outstanding = await countOutstandingUploadIntents(db, nowIso);
   if (outstanding >= config.maxOutstandingIntents) {
     return { ok: false, error: "TOO_MANY_PENDING_UPLOADS" };
@@ -247,14 +251,24 @@ export async function initiateUpload(
     completed_at: null,
   };
 
+  // Both inserts carry the outstanding-intent cap condition, so within the
+  // batch's implicit transaction they either both apply or both change zero
+  // rows. Zero changes means the cap filled between the pre-check and the
+  // write: undo the reservation and reject, with no orphan object left behind.
+  const guard = { nowIso, maxOutstandingIntents: config.maxOutstandingIntents };
+  let batchResults: D1Result[];
   try {
-    await db.batch([
-      insertStorageObjectStatement(db, objectRow),
-      insertUploadIntentStatement(db, intentRow),
+    batchResults = await db.batch([
+      insertStorageObjectStatement(db, objectRow, guard),
+      insertUploadIntentStatement(db, intentRow, guard),
     ]);
   } catch (err) {
     await releaseReservedBytes(db, input.size);
     throw err;
+  }
+  if ((batchResults[1]?.meta.changes ?? 0) === 0) {
+    await releaseReservedBytes(db, input.size);
+    return { ok: false, error: "TOO_MANY_PENDING_UPLOADS" };
   }
 
   const putUrl = await deps.presign(objectKey, input.contentType);
@@ -281,7 +295,7 @@ export async function completeUpload(
   uploadId: string,
   input: UploadCompleteInput,
 ): Promise<{ ok: true; object: StorageObjectRow } | UploadFailure> {
-  const { db, media } = deps;
+  const { db, media, config } = deps;
 
   const intent = await getUploadIntentById(db, uploadId);
   if (intent === null) {
@@ -389,9 +403,26 @@ export async function completeUpload(
     );
   }
 
-  // Race-safe claim: exactly one completion wins (idempotency gate).
-  const claimed = await claimUploadIntent(db, uploadId, "completed", nowIso);
+  // Race-safe claim that also enforces the daily completed-upload cap in the
+  // same statement (section 17, item 6): exactly one completion wins the
+  // idempotency gate, and the claim is refused once the day's cap is full.
+  const utcDayStart = `${nowIso.slice(0, 10)}T00:00:00.000Z`;
+  const claimed = await claimCompletedUploadIntent(
+    db,
+    uploadId,
+    nowIso,
+    utcDayStart,
+    config.maxCompletedUploadsPerUtcDay,
+  );
   if (!claimed) {
+    // Zero changes is either a lost race or the daily cap. Re-read to tell
+    // them apart: an intent still `initiated` was blocked by the cap guard,
+    // so clean up like a rejection (release the reservation, delete the
+    // uploaded object) rather than activating it.
+    const current = await getUploadIntentById(db, uploadId);
+    if (current !== null && current.status === "initiated") {
+      return rejectUpload(deps, intent, object, "DAILY_UPLOAD_LIMIT_REACHED");
+    }
     return { ok: false, error: "ALREADY_COMPLETED" };
   }
 

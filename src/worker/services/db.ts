@@ -384,9 +384,28 @@ export interface UploadIntentRow {
   completed_at: string | null;
 }
 
+/**
+ * Guards the initiate batch against the outstanding-intent cap: both the
+ * storage-object insert and the intent insert carry the same count condition,
+ * so within the batch's implicit transaction they either both apply or both
+ * match zero rows. This folds the cap check into the mutating statements
+ * (mirroring the atomic quota UPDATE in quota.ts), closing the check-then-insert
+ * race that a plain pre-count-then-INSERT leaves open (section 17, item 5).
+ */
+export interface OutstandingIntentGuard {
+  /** Current time; an outstanding intent is `initiated` and `expires_at > nowIso`. */
+  nowIso: string;
+  /** Maximum number of outstanding initiated intents allowed. */
+  maxOutstandingIntents: number;
+}
+
+const OUTSTANDING_INTENT_GUARD_SQL =
+  "(SELECT COUNT(*) FROM upload_intents WHERE status = 'initiated' AND expires_at > ?) < ?";
+
 export function insertStorageObjectStatement(
   db: D1Database,
   row: StorageObjectRow,
+  guard: OutstandingIntentGuard,
 ): D1PreparedStatement {
   return db
     .prepare(
@@ -394,7 +413,9 @@ export function insertStorageObjectStatement(
          id, owner_kind, owner_id, kind, object_key, public_path,
          original_filename, content_type, byte_length, etag, status,
          created_at, activated_at, orphaned_at, deleted_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       )
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE ${OUTSTANDING_INTENT_GUARD_SQL}`,
     )
     .bind(
       row.id,
@@ -412,19 +433,24 @@ export function insertStorageObjectStatement(
       row.activated_at,
       row.orphaned_at,
       row.deleted_at,
+      guard.nowIso,
+      guard.maxOutstandingIntents,
     );
 }
 
 export function insertUploadIntentStatement(
   db: D1Database,
   row: UploadIntentRow,
+  guard: OutstandingIntentGuard,
 ): D1PreparedStatement {
   return db
     .prepare(
       `INSERT INTO upload_intents (
          id, storage_object_id, expected_content_type, expected_size,
          status, expires_at, created_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       )
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE ${OUTSTANDING_INTENT_GUARD_SQL}`,
     )
     .bind(
       row.id,
@@ -435,6 +461,8 @@ export function insertUploadIntentStatement(
       row.expires_at,
       row.created_at,
       row.completed_at,
+      guard.nowIso,
+      guard.maxOutstandingIntents,
     );
 }
 
@@ -519,6 +547,34 @@ export async function claimUploadIntent(
       "UPDATE upload_intents SET status = ?, completed_at = ? WHERE id = ? AND status = 'initiated'",
     )
     .bind(status, completedAt, id)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Race-safe claim to `completed` that also enforces the per-UTC-day completed
+ * cap in the same statement (section 17, item 6): the transition applies only
+ * while fewer than `maxCompletedPerDay` intents are already completed since
+ * `dayStartIso`. Folding the cap into the mutating UPDATE closes the
+ * check-then-complete race a separate count would leave open. Zero changed rows
+ * means either another caller won the claim or the daily cap is full; callers
+ * re-read the intent status to tell the two apart.
+ */
+export async function claimCompletedUploadIntent(
+  db: D1Database,
+  id: string,
+  completedAt: string,
+  dayStartIso: string,
+  maxCompletedPerDay: number,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE upload_intents SET status = 'completed', completed_at = ?
+       WHERE id = ? AND status = 'initiated'
+         AND (SELECT COUNT(*) FROM upload_intents
+              WHERE status = 'completed' AND completed_at >= ?) < ?`,
+    )
+    .bind(completedAt, id, dayStartIso, maxCompletedPerDay)
     .run();
   return result.meta.changes > 0;
 }
