@@ -18,6 +18,7 @@ import {
   type EpisodeRow,
 } from "../services/db";
 import { checkShowFeedReady, synchronizeFeed, type FeedSyncDeps } from "../services/feed-sync";
+import { FEED_AFFECTING_EPISODE_STATUS_SET } from "./feed-status";
 
 /**
  * Episode business rules, including publish/unpublish with synchronous
@@ -37,9 +38,6 @@ export type EpisodeErrorCode =
 
 export type EpisodeResult =
   { ok: true; episode: EpisodeRow } | { ok: false; error: EpisodeErrorCode };
-
-/** Statuses whose episodes are (or were just) feed-visible (section 9.1). */
-const FEED_AFFECTING_STATUSES: ReadonlySet<EpisodeStatus> = new Set(["published", "unpublished"]);
 
 /** Statuses editable via PATCH; published metadata editing is out of scope here. */
 const EDITABLE_STATUSES: ReadonlySet<EpisodeStatus> = new Set(["draft", "unpublished"]);
@@ -149,7 +147,7 @@ export async function updateEpisode(
 
   // An unpublished episode was in the published feed until regeneration, so
   // its metadata changes are feed-affecting (9.1). Drafts never are.
-  if (FEED_AFFECTING_STATUSES.has(current.status)) {
+  if (FEED_AFFECTING_EPISODE_STATUS_SET.has(current.status)) {
     await incrementShowFeedRevision(db, current.show_id, now);
   }
 
@@ -294,9 +292,21 @@ export async function publishEpisode(deps: FeedSyncDeps, id: string): Promise<Pu
     if (latest.status === "archived") {
       return { ok: false, error: "EPISODE_NOT_PUBLISHABLE", details: { missing: ["status"] } };
     }
-    // Still draft/unpublished but the version moved: a concurrent metadata
-    // change landed after readiness passed. Re-validate against the current row
-    // so the reported reason reflects reality (e.g. a blanked description).
+    // The write also fences on the show being active, so a concurrent
+    // deactivate (which bumps the show version, not the episode version) is a
+    // second way to lose this race. Report it truthfully rather than as a
+    // misleading version conflict.
+    const latestShow = await getShowById(db, latest.show_id);
+    if (latestShow === null) {
+      return { ok: false, error: "SHOW_NOT_FOUND" };
+    }
+    if (latestShow.status !== "active") {
+      return { ok: false, error: "SHOW_INACTIVE" };
+    }
+    // Still draft/unpublished, show still active, but the version moved: a
+    // concurrent metadata change landed after readiness passed. Re-validate
+    // against the current row so the reported reason reflects reality (e.g. a
+    // blanked description).
     const missingNow = await missingPublishRequirements(db, latest);
     return {
       ok: false,
@@ -377,7 +387,7 @@ export async function deleteEpisode(
     return { ok: false, error: "NOT_FOUND" };
   }
 
-  if (FEED_AFFECTING_STATUSES.has(current.status)) {
+  if (FEED_AFFECTING_EPISODE_STATUS_SET.has(current.status)) {
     await incrementShowFeedRevision(db, current.show_id, new Date().toISOString());
   }
   return { ok: true };

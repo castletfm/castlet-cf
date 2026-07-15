@@ -1,11 +1,8 @@
 import type { z } from "zod";
 
 import { MAX_OUTSTANDING_UPLOAD_INTENTS } from "../../shared/constants";
-import type {
-  EpisodeStatus,
-  StorageObjectResource,
-  UploadInitiateResponse,
-} from "../../shared/contracts";
+import type { StorageObjectResource, UploadInitiateResponse } from "../../shared/contracts";
+import { FEED_AFFECTING_EPISODE_STATUSES } from "./feed-status";
 import type { uploadCompleteSchema, uploadInitiateSchema } from "../../shared/validation";
 import {
   activateStorageObjectStatement,
@@ -121,9 +118,6 @@ const KIND_CONTENT_TYPES: Record<"artwork" | "audio", ReadonlySet<string>> = {
 /** Artwork pixel bounds (section 11.1); enforced when the client reports dimensions. */
 const MIN_ARTWORK_PIXELS = 1400;
 const MAX_ARTWORK_PIXELS = 3000;
-
-/** Statuses whose episodes are (or were just) feed-visible (section 9.1). */
-const FEED_AFFECTING_EPISODE_STATUSES: readonly EpisodeStatus[] = ["published", "unpublished"];
 
 /**
  * Upper bound on compare-and-set attach retries during completion. The

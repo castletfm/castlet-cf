@@ -673,6 +673,43 @@ function raceOnRead(needle: string, mutate: () => Promise<void>): () => void {
   };
 }
 
+/**
+ * Like {@link raceOnRead} but lands `mutate` AFTER the terminal `.first()`
+ * returns, so the caller still reads the pre-mutation row into memory. Use this
+ * to test a write fenced in the DB (not a re-checked in-memory value): the flow
+ * reads a still-valid row, then the mutation invalidates it before the fenced
+ * write runs.
+ */
+function raceAfterRead(needle: string, mutate: () => Promise<void>): () => void {
+  const db = env.DB as unknown as { prepare: (sql: string) => PreparedStatement };
+  const originalPrepare = db.prepare.bind(db);
+  let fired = false;
+
+  function wrap(stmt: PreparedStatement, sql: string): PreparedStatement {
+    const s = stmt as unknown as {
+      bind: (...a: unknown[]) => PreparedStatement;
+      first: (...a: unknown[]) => Promise<unknown>;
+    };
+    const originalBind = s.bind.bind(s);
+    const originalFirst = s.first.bind(s);
+    s.bind = (...a: unknown[]): PreparedStatement => wrap(originalBind(...a), sql);
+    s.first = async (...a: unknown[]): Promise<unknown> => {
+      const row = await originalFirst(...a);
+      if (!fired && sql.includes(needle)) {
+        fired = true;
+        await mutate();
+      }
+      return row;
+    };
+    return stmt;
+  }
+
+  db.prepare = (sql: string): PreparedStatement => wrap(originalPrepare(sql), sql);
+  return () => {
+    db.prepare = originalPrepare;
+  };
+}
+
 describe("validate-then-write races", () => {
   it("rejects a publish whose validated version a concurrent PATCH bumped, and writes no feed", async () => {
     await makePublishable(episode.id);
@@ -702,6 +739,38 @@ describe("validate-then-write races", () => {
     // misleading EPISODE_ALREADY_PUBLISHED.
     expect(body.error.code).toBe("EPISODE_NOT_PUBLISHABLE");
     expect(body.error.details).toEqual({ missing: ["description"] });
+
+    // The episode stayed unpublished and no canonical feed was written.
+    expect((await episodeState(episode.id)).status).toBe("draft");
+    expect(await readFeed(show.slug)).toBeNull();
+  });
+
+  it("rejects a publish onto a show a concurrent deactivate flipped inactive, and writes no feed", async () => {
+    await makePublishable(episode.id);
+
+    // Deactivate the show the instant the publish flow reads it — i.e. AFTER the
+    // upfront show.status check saw the in-memory show active but BEFORE the
+    // fenced publish UPDATE. A deactivate bumps the show version, not the
+    // episode version, so the episode-version guard alone would still publish
+    // onto a just-deactivated show; the EXISTS(show active) fence changes zero
+    // rows instead, and the lost-race re-read reports it truthfully.
+    const restore = raceAfterRead("FROM shows WHERE id = ?", async () => {
+      await env.DB.prepare(
+        "UPDATE shows SET status = 'inactive', version = version + 1 WHERE id = ?",
+      )
+        .bind(show.id)
+        .run();
+    });
+
+    let res: Response;
+    try {
+      res = await publish(episode.id);
+    } finally {
+      restore();
+    }
+
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as ErrorBody).error.code).toBe("SHOW_INACTIVE");
 
     // The episode stayed unpublished and no canonical feed was written.
     expect((await episodeState(episode.id)).status).toBe("draft");
