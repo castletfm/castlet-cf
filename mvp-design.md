@@ -671,6 +671,8 @@ Server behavior:
    - increment the owning show's feed revision if the change affects the feed.
 8. Return the active media metadata.
 
+The attach in step 7 is a compare-and-set retried a bounded number of times against the owner's current attachment. If the owner (show or episode) is deleted after the intent is claimed completed but before the attach lands, stop retrying: the object is already active but references nobody, so mark it orphaned (its bytes stay in `active_bytes` until purge reclaims them) and return `409 OWNER_DELETED`. If the compare-and-set keeps losing past the retry cap while the owner still exists, orphan the object the same way and return `409 ATTACH_CONFLICT` rather than looping.
+
 If actual size exceeds the declared size, reject and delete the object. The client must initiate a new upload with the correct size.
 
 ## 11.6 Expiration and maintenance

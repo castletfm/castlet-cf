@@ -1,4 +1,12 @@
-import type { EpisodeStatus, EpisodeType, ShowStatus } from "../../shared/contracts";
+import type {
+  EpisodeStatus,
+  EpisodeType,
+  OwnerKind,
+  ShowStatus,
+  StorageKind,
+  StorageObjectStatus,
+  UploadIntentStatus,
+} from "../../shared/contracts";
 
 /**
  * Raw prepared D1 SQL helpers (mvp-design.md section 6: no ORM).
@@ -207,16 +215,24 @@ export async function deactivateShowRow(
  * Marks a show's feed as needing regeneration (section 9.1: feed-affecting
  * mutations increment shows.feed_revision). Does not touch `version`, so an
  * episode edit never invalidates the operator's cached show version.
+ * The statement variant lets callers include the bump in a D1 batch.
  */
+export function incrementShowFeedRevisionStatement(
+  db: D1Database,
+  showId: string,
+  updatedAt: string,
+): D1PreparedStatement {
+  return db
+    .prepare("UPDATE shows SET feed_revision = feed_revision + 1, updated_at = ? WHERE id = ?")
+    .bind(updatedAt, showId);
+}
+
 export async function incrementShowFeedRevision(
   db: D1Database,
   showId: string,
   updatedAt: string,
 ): Promise<void> {
-  await db
-    .prepare("UPDATE shows SET feed_revision = feed_revision + 1, updated_at = ? WHERE id = ?")
-    .bind(updatedAt, showId)
-    .run();
+  await incrementShowFeedRevisionStatement(db, showId, updatedAt).run();
 }
 
 // ---------------------------------------------------------------------------
@@ -333,4 +349,330 @@ export async function deleteEpisodeById(db: D1Database, id: string): Promise<boo
     .bind(id)
     .run();
   return result.meta.changes > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Storage objects and upload intents (sections 9, 11)
+// ---------------------------------------------------------------------------
+
+export interface StorageObjectRow {
+  id: string;
+  owner_kind: OwnerKind;
+  owner_id: string;
+  kind: StorageKind;
+  object_key: string;
+  public_path: string;
+  original_filename: string;
+  content_type: string;
+  byte_length: number | null;
+  etag: string | null;
+  status: StorageObjectStatus;
+  created_at: string;
+  activated_at: string | null;
+  orphaned_at: string | null;
+  deleted_at: string | null;
+}
+
+export interface UploadIntentRow {
+  id: string;
+  storage_object_id: string;
+  expected_content_type: string;
+  expected_size: number;
+  status: UploadIntentStatus;
+  expires_at: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/**
+ * Guards the initiate batch against the outstanding-intent cap: both the
+ * storage-object insert and the intent insert carry the same count condition,
+ * so within the batch's implicit transaction they either both apply or both
+ * match zero rows. This folds the cap check into the mutating statements
+ * (mirroring the atomic quota UPDATE in quota.ts), closing the check-then-insert
+ * race that a plain pre-count-then-INSERT leaves open (section 17, item 5).
+ */
+export interface OutstandingIntentGuard {
+  /** Current time; an outstanding intent is `initiated` and `expires_at > nowIso`. */
+  nowIso: string;
+  /** Maximum number of outstanding initiated intents allowed. */
+  maxOutstandingIntents: number;
+}
+
+const OUTSTANDING_INTENT_GUARD_SQL =
+  "(SELECT COUNT(*) FROM upload_intents WHERE status = 'initiated' AND expires_at > ?) < ?";
+
+export function insertStorageObjectStatement(
+  db: D1Database,
+  row: StorageObjectRow,
+  guard: OutstandingIntentGuard,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO storage_objects (
+         id, owner_kind, owner_id, kind, object_key, public_path,
+         original_filename, content_type, byte_length, etag, status,
+         created_at, activated_at, orphaned_at, deleted_at
+       )
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE ${OUTSTANDING_INTENT_GUARD_SQL}`,
+    )
+    .bind(
+      row.id,
+      row.owner_kind,
+      row.owner_id,
+      row.kind,
+      row.object_key,
+      row.public_path,
+      row.original_filename,
+      row.content_type,
+      row.byte_length,
+      row.etag,
+      row.status,
+      row.created_at,
+      row.activated_at,
+      row.orphaned_at,
+      row.deleted_at,
+      guard.nowIso,
+      guard.maxOutstandingIntents,
+    );
+}
+
+export function insertUploadIntentStatement(
+  db: D1Database,
+  row: UploadIntentRow,
+  guard: OutstandingIntentGuard,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO upload_intents (
+         id, storage_object_id, expected_content_type, expected_size,
+         status, expires_at, created_at, completed_at
+       )
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE ${OUTSTANDING_INTENT_GUARD_SQL}`,
+    )
+    .bind(
+      row.id,
+      row.storage_object_id,
+      row.expected_content_type,
+      row.expected_size,
+      row.status,
+      row.expires_at,
+      row.created_at,
+      row.completed_at,
+      guard.nowIso,
+      guard.maxOutstandingIntents,
+    );
+}
+
+export async function getStorageObjectById(
+  db: D1Database,
+  id: string,
+): Promise<StorageObjectRow | null> {
+  return db
+    .prepare("SELECT * FROM storage_objects WHERE id = ?")
+    .bind(id)
+    .first<StorageObjectRow>();
+}
+
+export async function getUploadIntentById(
+  db: D1Database,
+  id: string,
+): Promise<UploadIntentRow | null> {
+  return db.prepare("SELECT * FROM upload_intents WHERE id = ?").bind(id).first<UploadIntentRow>();
+}
+
+/** Outstanding intents: initiated and not yet past their expiry (section 17, item 5). */
+export async function countOutstandingUploadIntents(
+  db: D1Database,
+  nowIso: string,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM upload_intents WHERE status = 'initiated' AND expires_at > ?",
+    )
+    .bind(nowIso)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/** Completed uploads since `sinceIso` (UTC-day limit, section 17, item 6). */
+export async function countCompletedUploadsSince(
+  db: D1Database,
+  sinceIso: string,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM upload_intents WHERE status = 'completed' AND completed_at >= ?",
+    )
+    .bind(sinceIso)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/** Overdue initiated intents plus their object keys, oldest first, capped. */
+export async function listExpiredInitiatedIntents(
+  db: D1Database,
+  nowIso: string,
+  limit: number,
+): Promise<Array<UploadIntentRow & { object_key: string }>> {
+  const result = await db
+    .prepare(
+      `SELECT ui.*, so.object_key
+       FROM upload_intents ui
+       JOIN storage_objects so ON so.id = ui.storage_object_id
+       WHERE ui.status = 'initiated' AND ui.expires_at <= ?
+       ORDER BY ui.expires_at, ui.id
+       LIMIT ?`,
+    )
+    .bind(nowIso, limit)
+    .all<UploadIntentRow & { object_key: string }>();
+  return result.results;
+}
+
+/**
+ * Race-safe status transition out of `initiated`. Exactly one concurrent
+ * caller can claim an intent (complete, reject, abort, or expire it); the
+ * losers see zero changed rows and must re-read the current status.
+ */
+export async function claimUploadIntent(
+  db: D1Database,
+  id: string,
+  status: Exclude<UploadIntentStatus, "initiated">,
+  completedAt: string | null,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      "UPDATE upload_intents SET status = ?, completed_at = ? WHERE id = ? AND status = 'initiated'",
+    )
+    .bind(status, completedAt, id)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Race-safe claim to `completed` that also enforces the per-UTC-day completed
+ * cap in the same statement (section 17, item 6): the transition applies only
+ * while fewer than `maxCompletedPerDay` intents are already completed since
+ * `dayStartIso`. Folding the cap into the mutating UPDATE closes the
+ * check-then-complete race a separate count would leave open. Zero changed rows
+ * means either another caller won the claim or the daily cap is full; callers
+ * re-read the intent status to tell the two apart.
+ */
+export async function claimCompletedUploadIntent(
+  db: D1Database,
+  id: string,
+  completedAt: string,
+  dayStartIso: string,
+  maxCompletedPerDay: number,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE upload_intents SET status = 'completed', completed_at = ?
+       WHERE id = ? AND status = 'initiated'
+         AND (SELECT COUNT(*) FROM upload_intents
+              WHERE status = 'completed' AND completed_at >= ?) < ?`,
+    )
+    .bind(completedAt, id, dayStartIso, maxCompletedPerDay)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/** Marks a never-activated object rejected (failed verification). */
+export async function markStorageObjectRejected(db: D1Database, id: string): Promise<void> {
+  await db
+    .prepare("UPDATE storage_objects SET status = 'rejected' WHERE id = ? AND status = 'pending'")
+    .bind(id)
+    .run();
+}
+
+/** Marks a never-activated object deleted (abort or expiry cleanup). */
+export async function markStorageObjectDeleted(
+  db: D1Database,
+  id: string,
+  deletedAt: string,
+): Promise<void> {
+  await db
+    .prepare(
+      "UPDATE storage_objects SET status = 'deleted', deleted_at = ? WHERE id = ? AND status = 'pending'",
+    )
+    .bind(deletedAt, id)
+    .run();
+}
+
+export function activateStorageObjectStatement(
+  db: D1Database,
+  id: string,
+  byteLength: number,
+  etag: string,
+  activatedAt: string,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE storage_objects
+       SET status = 'active', byte_length = ?, etag = ?, activated_at = ?
+       WHERE id = ? AND status = 'pending'`,
+    )
+    .bind(byteLength, etag, activatedAt, id);
+}
+
+export function orphanStorageObjectStatement(
+  db: D1Database,
+  id: string,
+  orphanedAt: string,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE storage_objects
+       SET status = 'orphaned', orphaned_at = ?
+       WHERE id = ? AND status = 'active'`,
+    )
+    .bind(orphanedAt, id);
+}
+
+/**
+ * Compare-and-set attach of a show's artwork object: applies only while the
+ * show still points at `expectedPreviousObjectId` (null-safe via SQLite `IS`).
+ * Under concurrent completions this lets exactly one caller swap the
+ * attachment, so a just-attached object is never left active-but-unreferenced
+ * (invariant 9.1). Zero changed rows means another completion won the race and
+ * the caller must re-read the current attachment and retry.
+ */
+export function attachShowArtworkStatement(
+  db: D1Database,
+  showId: string,
+  storageObjectId: string,
+  updatedAt: string,
+  expectedPreviousObjectId: string | null,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE shows SET artwork_object_id = ?, version = version + 1, updated_at = ?
+       WHERE id = ? AND artwork_object_id IS ?`,
+    )
+    .bind(storageObjectId, updatedAt, showId, expectedPreviousObjectId);
+}
+
+/**
+ * Compare-and-set attach of an episode's audio object: applies only while the
+ * episode still points at `expectedPreviousObjectId` (null-safe via SQLite
+ * `IS`). Same concurrency contract as {@link attachShowArtworkStatement}.
+ */
+export function attachEpisodeAudioStatement(
+  db: D1Database,
+  episodeId: string,
+  storageObjectId: string,
+  durationSeconds: number | null,
+  updatedAt: string,
+  expectedPreviousObjectId: string | null,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE episodes
+       SET audio_object_id = ?, duration_seconds = COALESCE(?, duration_seconds),
+           version = version + 1, updated_at = ?
+       WHERE id = ? AND audio_object_id IS ?`,
+    )
+    .bind(storageObjectId, durationSeconds, updatedAt, episodeId, expectedPreviousObjectId);
 }

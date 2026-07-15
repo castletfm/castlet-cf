@@ -6,8 +6,8 @@ declare global {
   namespace Cloudflare {
     // Bindings available via `import { env } from "cloudflare:test"`.
     // Keep in sync with the miniflare options in vitest.config.ts. The
-    // analytics dataset and R2 signing secrets are not bound in tests yet;
-    // later phases add them when routes start using them.
+    // analytics dataset is not bound in tests yet; later phases add it when
+    // routes start using it.
     interface Env extends Pick<
       WorkerEnv,
       | "DB"
@@ -24,6 +24,8 @@ declare global {
       | "ADMIN_ACCESS_KEY_SHA256"
       | "SESSION_SIGNING_KEY"
       | "TURNSTILE_SECRET_KEY"
+      | "R2_ACCESS_KEY_ID"
+      | "R2_SECRET_ACCESS_KEY"
     > {
       TEST_MIGRATIONS: D1Migration[];
     }

@@ -6,8 +6,12 @@ import type {
   episodePatchSchema,
   episodeStatusSchema,
   episodeTypeSchema,
+  ownerKindSchema,
   showCreateSchema,
   showPatchSchema,
+  storageKindSchema,
+  uploadCompleteSchema,
+  uploadInitiateSchema,
 } from "./validation";
 
 /**
@@ -79,3 +83,44 @@ export interface ShowListResponse {
 export interface EpisodeListResponse {
   episodes: EpisodeResource[];
 }
+
+// ---------------------------------------------------------------------------
+// Uploads (mvp-design.md sections 11.3 and 11.5)
+// ---------------------------------------------------------------------------
+
+export type OwnerKind = z.infer<typeof ownerKindSchema>;
+export type StorageKind = z.infer<typeof storageKindSchema>;
+export type StorageObjectStatus = "pending" | "active" | "orphaned" | "deleted" | "rejected";
+export type UploadIntentStatus = "initiated" | "completed" | "expired" | "aborted" | "rejected";
+
+export type UploadInitiateRequest = z.input<typeof uploadInitiateSchema>;
+export type UploadCompleteRequest = z.input<typeof uploadCompleteSchema>;
+
+/** Response of POST /api/uploads (section 11.3). */
+export interface UploadInitiateResponse {
+  uploadId: string;
+  storageObjectId: string;
+  putUrl: string;
+  /** Headers the browser must send verbatim on the presigned PUT. */
+  headers: Record<string, string>;
+  publicPath: string;
+  expiresAt: string;
+}
+
+/** Storage-object metadata returned by POST /api/uploads/{id}/complete. */
+export interface StorageObjectResource {
+  id: string;
+  ownerKind: OwnerKind;
+  ownerId: string;
+  kind: StorageKind;
+  publicPath: string;
+  originalFilename: string;
+  contentType: string;
+  byteLength: number | null;
+  etag: string | null;
+  status: StorageObjectStatus;
+  createdAt: string;
+  activatedAt: string | null;
+}
+
+export type UploadCompleteResponse = StorageObjectResource;
