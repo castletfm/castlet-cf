@@ -5,3 +5,6 @@ node_modules/
 coverage/
 pnpm-lock.yaml
 mvp-design.md
+test/e2e/fixtures/
+playwright-report/
+test-results/

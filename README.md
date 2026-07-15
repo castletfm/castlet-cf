@@ -9,8 +9,8 @@ The full specification lives in [`mvp-design.md`](./mvp-design.md).
 
 ## Status
 
-Phases 0 (bootstrap and infrastructure) through 6 (analytics and
-maintenance) are implemented. The repo contains:
+Phases 0 (bootstrap and infrastructure) through 7 (hardening and handover) are
+implemented, including the full admin SPA. The repo contains:
 
 - the Worker skeleton with `GET /api/health`, request-ID and error-envelope
   middleware;
@@ -23,8 +23,10 @@ maintenance) are implemented. The repo contains:
   `/api/auth/login` requires a valid session (401 otherwise), and
   state-changing requests also require exact-origin, JSON content-type, and
   double-submit CSRF checks (403 otherwise);
-- the React/Vite admin SPA shell with a minimal login form (access key +
-  Turnstile widget) and a logged-in view with logout;
+- the React/Vite admin SPA: login (access key + Turnstile widget), dashboard
+  with storage meter, shows list/create/deactivate, show settings with artwork
+  upload and feed status, episodes list/create, and the episode editor with
+  audio upload, publish/unpublish, analytics, and storage-maintenance screens;
 - the initial D1 migration with the complete data model;
 - shared numeric limits (storage quota, file-size caps, TTLs, feed cap);
 - show and episode CRUD with optimistic concurrency and immutable GUIDs;
@@ -47,10 +49,9 @@ maintenance) are implemented. The repo contains:
   reconciliation against D1-derived sums);
 - Vitest 4 with the Cloudflare Workers pool, including D1/R2/Analytics Engine
   test bindings and automatic migration application in tests;
+- a Playwright end-to-end happy path (`test/e2e/`) and a deployment smoke-test
+  script (`scripts/smoke-test.mjs`);
 - ESLint, Prettier, and strict TypeScript for worker, web, and shared code.
-
-Phase 7 (hardening/E2E) and the dashboard/analytics UI screens are not
-implemented yet.
 
 ## Stack
 
@@ -82,6 +83,7 @@ Vite dev server proxies `/api` to `wrangler dev` on port 8787.
 | `pnpm dev:web`           | Vite dev server for the SPA (proxies `/api`)         |
 | `pnpm build`             | Build the SPA into `dist/`                           |
 | `pnpm test`              | Run unit + integration tests in the Workers runtime  |
+| `pnpm test:e2e`          | Playwright end-to-end happy path (local; see below)  |
 | `pnpm lint`              | ESLint                                               |
 | `pnpm format`            | Prettier (write)                                     |
 | `pnpm typecheck`         | Strict TypeScript checks (worker, web, node configs) |
@@ -89,23 +91,100 @@ Vite dev server proxies `/api` to `wrangler dev` on port 8787.
 | `pnpm db:migrate:remote` | Apply D1 migrations to the remote database           |
 | `pnpm deploy`            | Build then `wrangler deploy`                         |
 
-## Deployment (first time)
+## Testing
 
-Follow the runbook in `mvp-design.md` section 21. Short version:
+- **Unit + integration** (`pnpm test`): Vitest 4 on the Cloudflare Workers pool
+  with local D1/R2/Analytics Engine bindings. This is the CI test command
+  (`.github/workflows/ci.yml`); it is fast and needs no network or browser.
+- **End-to-end** (`pnpm test:e2e`): one Playwright happy path in `test/e2e/`
+  that drives the real admin SPA against a local `wrangler dev`. It logs in
+  with Turnstile TEST keys, creates a show, uploads artwork, creates an
+  episode, uploads a small MP3, publishes, fetches the feed and checks the
+  enclosure, does `HEAD` + `Range: bytes=0-1023` on the media, then unpublishes
+  and confirms the item leaves the feed. See
+  [`test/e2e/README.md`](./test/e2e/README.md) for how it works and its one
+  deviation from production (the R2 upload transport). First run needs
+  `pnpm exec playwright install chromium`. It is **not** part of CI: it needs a
+  browser download and one network call to Turnstile Siteverify, so it is run
+  manually rather than gating every push.
+- **Deployment smoke test** (`scripts/smoke-test.mjs`): checks a live
+  deployment's public surface (health, feed `HEAD`, media `HEAD`, and a
+  byte-range read that must return `206` with exactly 1024 bytes). Run after
+  every deploy:
 
-1. Create a D1 database and put its ID in `wrangler.jsonc` (`database_id`).
-2. Create a private R2 bucket named to match `r2_buckets` and keep `r2.dev`
-   disabled.
-3. Create a Turnstile widget; put the site key in `vars`, the secret in a
-   Worker secret.
-4. Generate the operator access key
-   (`node scripts/hash-admin-key.mjs`) and install secrets:
-   `ADMIN_ACCESS_KEY_SHA256`, `SESSION_SIGNING_KEY`, `TURNSTILE_SECRET_KEY`,
-   `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` via `wrangler secret put`.
-5. Optional but recommended: create an API token with Account Analytics read
-   access and install it as the `ANALYTICS_API_TOKEN` secret; without it,
-   `GET /api/analytics/episodes` reports `{ "available": false }`.
-6. `pnpm db:migrate:remote`, then `pnpm deploy`.
+  ```bash
+  node scripts/smoke-test.mjs "https://castlet.<you>.workers.dev" "<show-slug>" \
+    "https://castlet.<you>.workers.dev/media/<showId>/<episodeId>/<objectId>.mp3"
+  ```
+
+  `BASE_URL` (first argument) is required; the show slug and media URL are
+  optional and their checks are skipped when absent. It exits non-zero if any
+  attempted check fails.
+
+## Security
+
+- **Secrets** live only in `wrangler secret put` (production) or `.dev.vars`
+  (local, gitignored). Never commit them. The five required secrets are
+  `ADMIN_ACCESS_KEY_SHA256`, `SESSION_SIGNING_KEY`, `TURNSTILE_SECRET_KEY`,
+  `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`, plus the optional
+  `ANALYTICS_API_TOKEN`. `.dev.vars.example` holds placeholders only.
+- **Operator access key.** Authentication uses a high-entropy access key, not a
+  password. Only its lowercase SHA-256 digest is stored
+  (`ADMIN_ACCESS_KEY_SHA256`); the submitted key is hashed and compared in
+  constant time. The key is never logged and never written to browser storage.
+- **Sessions and CSRF.** Login issues an HMAC-signed `HttpOnly; Secure;
+SameSite=Strict` session cookie plus a readable CSRF cookie. Every
+  authenticated state-changing request must present a matching `X-CSRF-Token`,
+  an `Origin` that exactly equals `PUBLIC_BASE_URL`, and
+  `Content-Type: application/json`; anything else is rejected with `403`.
+  `PUBLIC_BASE_URL` must therefore be set to the real deployment origin.
+- **Private R2, direct uploads.** The bucket is private and its `r2.dev` public
+  URL stays disabled — media is served only through the Worker. Uploads go
+  straight from the browser to R2 via 15-minute presigned `PUT` URLs signed for
+  one exact object key and content type; the R2 API token is bucket-scoped to
+  only what presigning needs. The Worker verifies size, content type, and file
+  signature on completion without buffering the whole object.
+- **Logs** never include access keys, cookies, signed URLs, raw IP addresses,
+  or owner emails.
+
+## Production setup checklist
+
+The full runbook is `mvp-design.md` section 21. Steps:
+
+1. Use a Cloudflare account on the Workers **Free** plan.
+2. Choose a **stable** Worker name (`name` in `wrangler.jsonc`, currently
+   `castlet`). Changing it later changes every `workers.dev` URL.
+3. Create one D1 database (`wrangler d1 create castlet-db`) and put its ID in
+   `wrangler.jsonc` (`d1_databases[0].database_id`, currently `REPLACE_ME`).
+4. Create one **R2 Standard** bucket named `castlet-media`
+   (`wrangler r2 bucket create castlet-media`).
+5. **Disable the bucket's `r2.dev` public URL** (R2 → bucket → Settings). The
+   Worker is the only public path to media.
+6. Create a **bucket-scoped R2 API token** (Object Read & Write) for presigned
+   uploads; note its access key ID and secret.
+7. Configure the bucket's **CORS** for your exact deployment origin: allow
+   `PUT` and `HEAD`, allow the `Content-Type` request header, and expose the
+   `ETag` response header.
+8. Create a **Turnstile** widget for the deployment hostname; put its site key
+   in `wrangler.jsonc` (`vars.TURNSTILE_SITE_KEY`).
+9. Generate the operator access key with `node scripts/hash-admin-key.mjs`
+   (prints the key once on stderr and its SHA-256 digest on stdout). Store the
+   key in a password manager.
+10. Generate a separate random session-signing key (e.g.
+    `openssl rand -base64 48`).
+11. Set `vars` in `wrangler.jsonc` (`PUBLIC_BASE_URL`, `R2_ACCOUNT_ID`,
+    `R2_BUCKET_NAME`, size/TTL limits) and install the secrets with
+    `wrangler secret put`: `ADMIN_ACCESS_KEY_SHA256`, `SESSION_SIGNING_KEY`,
+    `TURNSTILE_SECRET_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`.
+    Optionally also install `ANALYTICS_API_TOKEN` (an API token with Account
+    Analytics read access); without it `GET /api/analytics/episodes` reports
+    `{ "available": false }` instead of failing. This token is a deviation from
+    the design doc's binding list — see the deviations note below.
+12. Apply remote migrations: `pnpm db:migrate:remote`.
+13. Deploy: `pnpm deploy`.
+14. Run the smoke test (see [Testing](#testing)).
+15. Create a show and publish a small test episode.
+16. Validate the RSS feed (e.g. in Apple Podcasts Connect) before public launch.
 
 ## Cost assumptions and billing caveat
 
@@ -118,9 +197,70 @@ access to more traffic.
 
 **R2 is usage-based, not hard-capped.** Exceeding the free monthly allowance
 (storage, Class A/B operations) creates real charges. The application enforces
-its own 8.5 GiB storage ceiling (`MAX_TOTAL_STORAGE_BYTES`) and upload limits
-as a safeguard, and budget notifications are not a spending cutoff. Keep the
-bucket on R2 Standard storage and keep the `r2.dev` public URL disabled.
+its own 8.5 GiB storage ceiling (`MAX_TOTAL_STORAGE_BYTES` = `9,126,805,504`
+bytes) and per-file/upload limits as a safeguard, and budget notifications are
+not a spending cutoff. Keep the bucket on R2 Standard storage and keep the
+`r2.dev` public URL disabled.
+
+### Upgrade triggers
+
+Known limits and the likely response when the MVP outgrows them
+(`mvp-design.md` section 22):
+
+| Trigger                                           | Likely response                                                                    |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Active storage approaches 8.5 GiB                 | Purge orphaned media, buy R2 storage, or move the archive while preserving URLs    |
+| Worker traffic approaches ~70,000 requests/day    | Consider a custom domain with direct R2 delivery, paid Workers, or split delivery  |
+| Need WAV/FLAC ingestion or loudness normalization | Add paid Containers with FFmpeg or a separate processing service                   |
+| Need public creators (multi-tenant)               | Replace single-key auth with real identity, abuse controls, email, quotas, billing |
+| Need scheduled publishing                         | Add a bounded Workflow/Cron design and re-verify plan requirements                 |
+| Need long-term or certified analytics             | Build a retained log pipeline and an IAB-aligned measurement process               |
+| Need private feeds                                | Add signed feed/media authorization and redesign cache behavior                    |
+| Need guaranteed URL ownership                     | Attach a controlled custom domain and keep old feed URLs with permanent redirects  |
+| Need more than 3 days of operational logs         | Add paid log export or an external log destination                                 |
+
+## Backup and recovery
+
+There is no automatic backup on the Free plan, but the procedure is
+reproducible (`mvp-design.md` section 21.3). Run it on a schedule you are
+comfortable with.
+
+1. **Export D1 metadata to SQL:**
+
+   ```bash
+   wrangler d1 export castlet-db --remote --output castlet-db-backup.sql
+   ```
+
+   This is the source of truth for shows, episodes, immutable GUIDs, storage
+   objects, and quota counters.
+
+2. **Copy R2 media** (audio, artwork, and generated feeds) with any
+   S3-compatible tool pointed at the R2 endpoint, for example:
+
+   ```bash
+   # endpoint: https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com
+   aws s3 sync s3://castlet-media ./castlet-media-backup \
+     --endpoint-url "https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com"
+   ```
+
+3. **Keep the identity mapping.** The D1 export already contains the durable
+   mapping you need to restore identity: `episodes.guid` (never changes),
+   `storage_objects.public_path`, and `storage_objects.object_key`. Preserving
+   GUIDs and public paths is what keeps existing subscribers working after a
+   restore. For a lightweight standalone copy:
+
+   ```bash
+   wrangler d1 execute castlet-db --remote --json \
+     --command "SELECT e.guid, o.public_path, o.object_key
+                FROM episodes e JOIN storage_objects o ON o.id = e.audio_object_id" \
+     > castlet-guid-path-map.json
+   ```
+
+4. **Test the restore into a NON-production Worker name.** Never restore over
+   production while verifying. Create a scratch Worker/D1/R2 (e.g.
+   `castlet-restore-test`), load the SQL into its D1
+   (`wrangler d1 execute <db> --remote --file castlet-db-backup.sql`), copy the
+   R2 objects into its bucket, deploy, and run the smoke test against it.
 
 ## Notes and deviations from the design doc
 
@@ -170,3 +310,17 @@ bucket on R2 Standard storage and keep the `r2.dev` public URL disabled.
   the worker ignore the range and return the full `200` response, which is
   always safe. `HEAD` requests ignore `Range` and return full-entity headers,
   as RFC 9110 permits.
+- **Dev-only upload shim for the e2e** (not in the design doc): the Playwright
+  happy path runs against a local `wrangler dev`, whose local R2 bucket has no
+  reachable presigned-`PUT` endpoint. `src/worker/routes/e2e-shim.ts` adds
+  `PUT /__e2e/r2/*`, which writes bytes straight to the R2 binding. It is inert
+  unless the `E2E_UPLOAD_SHIM` var equals `"1"` — that var is absent from
+  `wrangler.jsonc` and `.dev.vars.example`, so a real deployment always returns
+  `404`. `"/__e2e/*"` was added to `assets.run_worker_first` so the shim's
+  non-`GET` request reaches the Worker instead of the assets layer; in
+  production this only means the Worker returns `404` for that path. See
+  [`test/e2e/README.md`](./test/e2e/README.md).
+- **Playwright e2e is not in CI**: `ci.yml` runs typecheck, lint, format,
+  `pnpm test`, and build. The e2e needs a browser download and one network call
+  to Turnstile Siteverify, so it is run manually (`pnpm test:e2e`) rather than
+  gating every push, keeping CI fast and hermetic.
