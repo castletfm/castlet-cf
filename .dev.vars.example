@@ -21,3 +21,8 @@ TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
 # Bucket-scoped R2 API token used only for presigned upload URL signing.
 R2_ACCESS_KEY_ID=replace-with-r2-access-key-id
 R2_SECRET_ACCESS_KEY=replace-with-r2-secret-access-key
+
+# Optional: API token with Account Analytics read access, used by
+# GET /api/analytics/episodes to query the Analytics Engine SQL API.
+# Leave unset locally: the endpoint then reports { "available": false }.
+# ANALYTICS_API_TOKEN=replace-with-analytics-read-token

@@ -14,6 +14,7 @@ import {
   bumpShowFeedRevisionOnArtworkAttachStatement,
   bumpShowFeedRevisionOnEpisodeAudioAttachStatement,
   claimCompletedUploadIntent,
+  claimStorageObjectPurge,
   claimUploadIntent,
   countCompletedUploadsSince,
   countOutstandingUploadIntents,
@@ -21,6 +22,7 @@ import {
   getShowById,
   getStorageObjectById,
   getUploadIntentById,
+  getUploadIntentByStorageObjectId,
   insertStorageObjectStatement,
   insertUploadIntentStatement,
   listExpiredInitiatedIntents,
@@ -30,7 +32,12 @@ import {
   type StorageObjectRow,
   type UploadIntentRow,
 } from "../services/db";
-import { commitReservedBytes, releaseReservedBytes, reserveBytes } from "../services/quota";
+import {
+  commitReservedBytes,
+  releaseActiveBytes,
+  releaseReservedBytes,
+  reserveBytes,
+} from "../services/quota";
 import { SIGNATURE_RANGE_BYTES, hasValidMediaSignature } from "../services/upload-verification";
 
 /**
@@ -628,42 +635,152 @@ export async function abortUpload(
 /** Default per-request cap on swept intents. */
 export const EXPIRATION_SWEEP_LIMIT = 20;
 
+/** What one bounded expiration sweep accomplished. */
+export interface SweepReport {
+  /** Overdue initiated intents transitioned to 'expired'. */
+  expiredIntents: number;
+  /** Reserved bytes released by those expirations. */
+  releasedBytes: number;
+  /** Uploaded R2 objects that existed and were deleted. */
+  deletedObjects: number;
+}
+
 /**
  * Expires overdue initiated intents: marks them expired, releases their
  * reservations, deletes any uploaded R2 object, and marks the pending
  * storage object deleted. Bounded by `limit`; called opportunistically at
- * the start of POST /api/uploads and reusable by the maintenance endpoint.
- * Returns the number of intents expired.
+ * the start of POST /api/uploads and on dashboard load, and with a larger
+ * cap by POST /api/maintenance/run.
  */
 export async function sweepExpiredUploadIntents(
   deps: UploadDeps,
   limit: number = EXPIRATION_SWEEP_LIMIT,
-): Promise<number> {
+): Promise<SweepReport> {
   const nowIso = new Date().toISOString();
   const overdue = await listExpiredInitiatedIntents(deps.db, nowIso, limit);
 
-  let expired = 0;
+  const report: SweepReport = { expiredIntents: 0, releasedBytes: 0, deletedObjects: 0 };
   for (const row of overdue) {
     const done = await expireIntent(deps, row, row.object_key);
-    if (done) {
-      expired += 1;
+    if (done.expired) {
+      report.expiredIntents += 1;
+      report.releasedBytes += row.expected_size;
+      if (done.objectDeleted) {
+        report.deletedObjects += 1;
+      }
     }
   }
-  return expired;
+  return report;
 }
 
-/** Expires one initiated intent; returns false if another caller won the claim. */
+/**
+ * Expires one initiated intent; `expired` is false if another caller won the
+ * claim. The R2 HEAD before DELETE tells the maintenance report whether an
+ * uploaded object was actually removed (delete alone gives no signal).
+ */
 async function expireIntent(
-  deps: UploadDeps,
+  deps: Pick<UploadDeps, "db" | "media">,
   intent: UploadIntentRow,
   objectKey: string,
-): Promise<boolean> {
+): Promise<{ expired: boolean; objectDeleted: boolean }> {
   const claimed = await claimUploadIntent(deps.db, intent.id, "expired", null);
   if (!claimed) {
-    return false;
+    return { expired: false, objectDeleted: false };
   }
   await releaseReservedBytes(deps.db, intent.expected_size);
-  await deps.media.delete(objectKey);
+  const uploaded = await deps.media.head(objectKey);
+  if (uploaded !== null) {
+    await deps.media.delete(objectKey);
+  }
   await markStorageObjectDeleted(deps.db, intent.storage_object_id, new Date().toISOString());
-  return true;
+  return { expired: true, objectDeleted: uploaded !== null };
+}
+
+// ---------------------------------------------------------------------------
+// Purge (section 15.2, DELETE /api/storage/{id})
+// ---------------------------------------------------------------------------
+
+export type PurgeErrorCode = "NOT_FOUND" | "OBJECT_ACTIVE" | "UPLOAD_IN_FLIGHT" | "ALREADY_PURGED";
+
+export type PurgeFailure = { ok: false; error: PurgeErrorCode };
+
+/**
+ * Purges an eligible object: deletes it from R2, decrements active storage
+ * exactly once (status-guarded claim; a repeat purge gets 409 and never a
+ * second decrement), and marks the record deleted.
+ *
+ * Eligible statuses:
+ * - orphaned: R2 delete + active_bytes decrement (section 9.1: orphaned
+ *   bytes count until purged);
+ * - rejected: R2 delete only (its reservation was already released and
+ *   active_bytes never included it);
+ * - pending with an expired intent: same cleanup as the expiration sweep;
+ *   pending with a live intent is refused (the upload may still complete).
+ *
+ * Never purges an active object.
+ *
+ * Order matters for orphans: R2 delete happens before the claim/decrement,
+ * so an interrupted purge can be retried and the quota can never drop while
+ * the object still exists in R2.
+ */
+export async function purgeStorageObject(
+  deps: Pick<UploadDeps, "db" | "media">,
+  id: string,
+): Promise<{ ok: true } | PurgeFailure> {
+  const { db, media } = deps;
+  const object = await getStorageObjectById(db, id);
+  if (object === null) {
+    return { ok: false, error: "NOT_FOUND" };
+  }
+  const nowIso = new Date().toISOString();
+
+  switch (object.status) {
+    case "active":
+      return { ok: false, error: "OBJECT_ACTIVE" };
+    case "deleted":
+      return { ok: false, error: "ALREADY_PURGED" };
+    case "orphaned": {
+      await media.delete(object.object_key);
+      const claimed = await claimStorageObjectPurge(db, id, "orphaned", nowIso);
+      if (!claimed) {
+        return { ok: false, error: "ALREADY_PURGED" };
+      }
+      const bytes = object.byte_length ?? 0;
+      if (bytes > 0) {
+        // False return = pre-existing quota drift; maintenance reconciles it.
+        await releaseActiveBytes(db, bytes);
+      }
+      return { ok: true };
+    }
+    case "rejected": {
+      await media.delete(object.object_key);
+      const claimed = await claimStorageObjectPurge(db, id, "rejected", nowIso);
+      if (!claimed) {
+        return { ok: false, error: "ALREADY_PURGED" };
+      }
+      return { ok: true };
+    }
+    case "pending": {
+      const intent = await getUploadIntentByStorageObjectId(db, object.id);
+      if (intent !== null && intent.status === "initiated") {
+        if (intent.expires_at > nowIso) {
+          return { ok: false, error: "UPLOAD_IN_FLIGHT" };
+        }
+        // Stale pending: identical cleanup to the expiration sweep.
+        const done = await expireIntent(deps, intent, object.object_key);
+        if (!done.expired) {
+          return { ok: false, error: "ALREADY_PURGED" };
+        }
+        return { ok: true };
+      }
+      // Pending object whose intent already left 'initiated' (its reservation
+      // was released then): just remove the object.
+      await media.delete(object.object_key);
+      const claimed = await claimStorageObjectPurge(db, id, "pending", nowIso);
+      if (!claimed) {
+        return { ok: false, error: "ALREADY_PURGED" };
+      }
+      return { ok: true };
+    }
+  }
 }

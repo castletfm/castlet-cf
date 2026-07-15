@@ -9,8 +9,8 @@ The full specification lives in [`mvp-design.md`](./mvp-design.md).
 
 ## Status
 
-Phases 0 (bootstrap and infrastructure) through 5 (public delivery) are
-implemented. The repo contains:
+Phases 0 (bootstrap and infrastructure) through 6 (analytics and
+maintenance) are implemented. The repo contains:
 
 - the Worker skeleton with `GET /api/health`, request-ID and error-envelope
   middleware;
@@ -36,12 +36,21 @@ implemented. The repo contains:
   byte-range support (`206`/`416`), conditional requests (`If-None-Match`,
   `If-Modified-Since`), immutable cache headers, and one Analytics Engine
   event per media response;
+- operator maintenance APIs: `GET /api/dashboard` (storage counters,
+  feed-dirty shows, recent episodes, plus an opportunistic capped cleanup of
+  expired uploads), `GET /api/analytics/episodes` (per-episode request/byte
+  totals from the Analytics Engine SQL API, degrading to
+  `{ "available": false }` when no `ANALYTICS_API_TOKEN` is configured),
+  `GET /api/storage/orphans` and `DELETE /api/storage/{id}` (orphan review
+  and race-safe purge with exact quota decrement), and
+  `POST /api/maintenance/run` (bulk intent expiration plus quota
+  reconciliation against D1-derived sums);
 - Vitest 4 with the Cloudflare Workers pool, including D1/R2/Analytics Engine
   test bindings and automatic migration application in tests;
 - ESLint, Prettier, and strict TypeScript for worker, web, and shared code.
 
-Later phases add analytics queries, orphan purge, maintenance, and the real
-dashboard screens. None of those are implemented yet.
+Phase 7 (hardening/E2E) and the dashboard/analytics UI screens are not
+implemented yet.
 
 ## Stack
 
@@ -93,7 +102,10 @@ Follow the runbook in `mvp-design.md` section 21. Short version:
    (`node scripts/hash-admin-key.mjs`) and install secrets:
    `ADMIN_ACCESS_KEY_SHA256`, `SESSION_SIGNING_KEY`, `TURNSTILE_SECRET_KEY`,
    `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` via `wrangler secret put`.
-5. `pnpm db:migrate:remote`, then `pnpm deploy`.
+5. Optional but recommended: create an API token with Account Analytics read
+   access and install it as the `ANALYTICS_API_TOKEN` secret; without it,
+   `GET /api/analytics/episodes` reports `{ "available": false }`.
+6. `pnpm db:migrate:remote`, then `pnpm deploy`.
 
 ## Cost assumptions and billing caveat
 
@@ -141,6 +153,15 @@ bucket on R2 Standard storage and keep the `r2.dev` public URL disabled.
   build-time env var or per-environment rebuild is needed.
 - **TypeScript is pinned to 5.x** (not the new 7.x line) because
   `typescript-eslint` currently supports `>=4.8.4 <6.1.0`.
+- **`ANALYTICS_API_TOKEN` secret added beyond section 8**: Analytics Engine
+  has no read binding, so `GET /api/analytics/episodes` queries the
+  Analytics Engine SQL REST API
+  (`https://api.cloudflare.com/client/v4/accounts/{account_id}/analytics_engine/sql`)
+  with a bearer token. The design doc's binding list (section 8) does not
+  mention this; the implementation adds an optional `ANALYTICS_API_TOKEN`
+  secret and reuses `R2_ACCOUNT_ID` as the account ID. When the token is not
+  configured (tests, local dev) the endpoint returns
+  `{ "available": false, "episodes": [] }` with `200` instead of failing.
 - **`If-Range` supports exact ETag matches only** (design section 14.4 allows
   deferring it as long as no incorrect partial data is served). When an
   `If-Range` header exactly equals the media object's current quoted ETag,

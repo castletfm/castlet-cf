@@ -26,7 +26,8 @@ import { readJsonBody, validationFailed } from "./common";
  * Mounted at /api/uploads behind sessionAuth + csrfProtection.
  */
 
-function uploadDeps(c: Context<AppEnv>): UploadDeps {
+/** Shared with the dashboard and maintenance routes, which reuse the sweep. */
+export function uploadDeps(c: Context<AppEnv>): UploadDeps {
   const env = c.env;
   return {
     db: env.DB,

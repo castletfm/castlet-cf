@@ -1055,8 +1055,10 @@ describe("expiration sweep", () => {
       .bind(PAST_ISO, initiated.uploadId)
       .run();
 
-    const expired = await sweepExpiredUploadIntents(testDeps());
-    expect(expired).toBeGreaterThanOrEqual(1);
+    const report = await sweepExpiredUploadIntents(testDeps());
+    expect(report.expiredIntents).toBeGreaterThanOrEqual(1);
+    expect(report.releasedBytes).toBeGreaterThanOrEqual(64);
+    expect(report.deletedObjects).toBeGreaterThanOrEqual(1);
 
     expect((await intentRow(initiated.uploadId)).status).toBe("expired");
     expect((await objectRow(initiated.storageObjectId)).status).toBe("deleted");

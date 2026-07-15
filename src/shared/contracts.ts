@@ -126,3 +126,104 @@ export interface StorageObjectResource {
 }
 
 export type UploadCompleteResponse = StorageObjectResource;
+
+// ---------------------------------------------------------------------------
+// Dashboard (mvp-design.md section 15.2, GET /api/dashboard)
+// ---------------------------------------------------------------------------
+
+/** Storage counters from account_usage plus the configured ceiling. */
+export interface StorageCounters {
+  activeBytes: number;
+  reservedBytes: number;
+  /** MAX_TOTAL_STORAGE_BYTES for this deployment. */
+  maxTotalBytes: number;
+}
+
+export interface DashboardResponse {
+  storage: StorageCounters;
+  /** Shows whose canonical feed is stale or failed to synchronize. */
+  feedDirtyShows: ShowResource[];
+  /** Most recently created episodes, newest first, capped. */
+  recentEpisodes: EpisodeResource[];
+}
+
+// ---------------------------------------------------------------------------
+// Analytics (mvp-design.md section 15.2, GET /api/analytics/episodes)
+// ---------------------------------------------------------------------------
+
+/**
+ * Aggregated delivery totals for one episode (or a show's artwork, marked by
+ * episodeId === "artwork"). Request counts are non-certified totals, never
+ * unique listeners or IAB downloads.
+ */
+export interface EpisodeAnalytics {
+  showId: string;
+  /** Episode ID, or "artwork" for show artwork deliveries. */
+  episodeId: string;
+  requests: number;
+  bytes: number;
+  rangedRequests: number;
+}
+
+export interface AnalyticsEpisodesResponse {
+  /** False when no Analytics Engine API token is configured. */
+  available: boolean;
+  /** Effective (clamped) query window, ISO-8601 UTC. */
+  from: string;
+  to: string;
+  episodes: EpisodeAnalytics[];
+}
+
+// ---------------------------------------------------------------------------
+// Storage administration (mvp-design.md section 15.2)
+// ---------------------------------------------------------------------------
+
+/** One orphaned object in GET /api/storage/orphans. */
+export interface OrphanedObjectResource {
+  id: string;
+  ownerKind: OwnerKind;
+  ownerId: string;
+  /** Owning show/episode title, or null when the owner no longer exists. */
+  ownerTitle: string | null;
+  kind: StorageKind;
+  publicPath: string;
+  originalFilename: string;
+  contentType: string;
+  byteLength: number | null;
+  orphanedAt: string | null;
+}
+
+export interface OrphanListResponse {
+  orphans: OrphanedObjectResource[];
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance (mvp-design.md sections 11.6 and 17, POST /api/maintenance/run)
+// ---------------------------------------------------------------------------
+
+/** Difference between recorded account_usage counters and D1-derived sums. */
+export interface UsageDrift {
+  recordedActiveBytes: number;
+  /** SUM(byte_length) of active + orphaned storage objects. */
+  computedActiveBytes: number;
+  /** recorded - computed; 0 means no drift. */
+  activeBytesDrift: number;
+  recordedReservedBytes: number;
+  /** SUM(expected_size) of intents still in status 'initiated'. */
+  computedReservedBytes: number;
+  reservedBytesDrift: number;
+}
+
+export interface MaintenanceRunResponse {
+  /** Overdue initiated intents expired by this run. */
+  expiredIntents: number;
+  /** Reserved bytes released by expiring those intents. */
+  releasedBytes: number;
+  /** Pending R2 objects that existed and were deleted by this run. */
+  deletedObjects: number;
+  drift: UsageDrift;
+  /** True when account_usage was rewritten to the computed values. */
+  corrected: boolean;
+  /** Human-readable caveats (e.g. checks that would need a full R2 listing). */
+  notes: string[];
+}
