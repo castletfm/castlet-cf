@@ -896,3 +896,61 @@ export function attachEpisodeAudioStatement(
     )
     .bind(storageObjectId, durationSeconds, updatedAt, episodeId, expectedPreviousObjectId);
 }
+
+/**
+ * Feed-revision bump for a completed audio-replacement attach, guarded so it
+ * reflects the episode's status AT ATTACH TIME rather than a stale pre-attach
+ * read. Bumps the owning show's feed_revision only when, WITHIN THE SAME BATCH,
+ * the episode now points at the just-attached object AND is currently in a
+ * feed-visible status (`feedAffectingStatuses`). Batch this right after
+ * {@link attachEpisodeAudioStatement} so its EXISTS guard reads the attach's own
+ * write in the same transaction. That closes the window where a replacement
+ * completing while the episode is draft -- but concurrently published and
+ * synchronized against the OLD audio before the attach lands -- would leave the
+ * show reported synchronized while its published episode's active enclosure
+ * differs from what the feed serves (section 9.1). A lost attach leaves the
+ * episode pointing elsewhere, so the guard matches zero rows and no spurious
+ * bump occurs.
+ */
+export function bumpShowFeedRevisionOnEpisodeAudioAttachStatement(
+  db: D1Database,
+  showId: string,
+  episodeId: string,
+  attachedObjectId: string,
+  feedAffectingStatuses: readonly string[],
+  updatedAt: string,
+): D1PreparedStatement {
+  const placeholders = feedAffectingStatuses.map(() => "?").join(", ");
+  return db
+    .prepare(
+      `UPDATE shows SET feed_revision = feed_revision + 1, updated_at = ?
+       WHERE id = ? AND EXISTS (
+         SELECT 1 FROM episodes
+         WHERE id = ? AND show_id = ? AND audio_object_id = ?
+           AND status IN (${placeholders})
+       )`,
+    )
+    .bind(updatedAt, showId, episodeId, showId, attachedObjectId, ...feedAffectingStatuses);
+}
+
+/**
+ * Feed-revision bump for a completed show-artwork attach. Show artwork is always
+ * feed-visible, so this bumps whenever, within the same batch, the show now
+ * points at the just-attached artwork object (i.e. the attach landed). Batch
+ * this right after {@link attachShowArtworkStatement}; a lost attach leaves the
+ * show pointing elsewhere, so the guard matches zero rows and no spurious bump
+ * occurs.
+ */
+export function bumpShowFeedRevisionOnArtworkAttachStatement(
+  db: D1Database,
+  showId: string,
+  attachedObjectId: string,
+  updatedAt: string,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE shows SET feed_revision = feed_revision + 1, updated_at = ?
+       WHERE id = ? AND artwork_object_id = ?`,
+    )
+    .bind(updatedAt, showId, attachedObjectId);
+}

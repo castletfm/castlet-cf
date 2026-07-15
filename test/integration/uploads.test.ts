@@ -8,6 +8,7 @@ import type {
   StorageObjectResource,
   UploadInitiateResponse,
 } from "../../src/shared/contracts";
+import { publishEpisode } from "../../src/worker/domain/episodes";
 import {
   completeUpload,
   sweepExpiredUploadIntents,
@@ -875,6 +876,130 @@ describe("POST /api/uploads/{id}/complete", () => {
     const after = await usage();
     expect(after.reserved_bytes).toBe(before.reserved_bytes);
     expect(after.active_bytes - before.active_bytes).toBe(64);
+  });
+
+  it("marks the feed dirty when a concurrent publish makes the episode feed-visible before a replacement attach lands", async () => {
+    // Silent feed-corruption race (section 9.1, same class the per-show feed-sync
+    // lock defends). A replacement audio upload completes while the episode is
+    // still draft, so the pre-attach read decides feedAffected=false. A
+    // concurrent publish then flips the episode to published and synchronizes
+    // feeds/{slug}.xml against the OLD audio A -- fully, marking the show
+    // synchronized -- before the attach batch runs. The attach swaps the
+    // enclosure to B and orphans A. The stale draft decision skipped the
+    // feed_revision bump, so the show stayed reported synchronized while its
+    // published episode's active enclosure (B) differs from what the feed serves
+    // (A, soon a 404 once A is purged): no dirty banner, no operator signal.
+    //
+    // With the fix the bump is guarded on the episode's status AT ATTACH TIME
+    // inside the same batch, so the just-swapped enclosure bumps feed_revision
+    // and the show is left dirty (feed_published_revision < feed_revision), which
+    // the section-16 banner surfaces and regenerate-feed self-corrects.
+    //
+    // Reproduced deterministically by wrapping env.DB so the concurrent publish
+    // (against the real DB) runs to completion the instant the attach batch is
+    // first issued -- the read->attach window the domain function exposes.
+    await env.DB.prepare("DELETE FROM upload_intents WHERE status = 'completed'").run();
+
+    // Make the episode publishable while still draft, with an active audio A
+    // attached and the show artwork present.
+    const nowIso = new Date().toISOString();
+    const audioA = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO storage_objects (
+         id, owner_kind, owner_id, kind, object_key, public_path,
+         original_filename, content_type, byte_length, etag, status,
+         created_at, activated_at
+       ) VALUES (?, 'episode', ?, 'audio', ?, ?, 'a.mp3', 'audio/mpeg', 4096, 'etag-a', 'active', ?, ?)`,
+    )
+      .bind(
+        audioA,
+        episode.id,
+        `audio/${show.id}/${episode.id}/${audioA}.mp3`,
+        `/media/${show.id}/${episode.id}/${audioA}.mp3`,
+        nowIso,
+        nowIso,
+      )
+      .run();
+    const artwork = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO storage_objects (
+         id, owner_kind, owner_id, kind, object_key, public_path,
+         original_filename, content_type, byte_length, etag, status,
+         created_at, activated_at
+       ) VALUES (?, 'show', ?, 'artwork', ?, ?, 'cover.jpg', 'image/jpeg', 4096, 'etag-art', 'active', ?, ?)`,
+    )
+      .bind(
+        artwork,
+        show.id,
+        `artwork/${show.id}/${artwork}.jpg`,
+        `/artwork/${show.id}/${artwork}.jpg`,
+        nowIso,
+        nowIso,
+      )
+      .run();
+    await env.DB.prepare(
+      "UPDATE episodes SET audio_object_id = ?, duration_seconds = 100, description = 'Ready to publish.' WHERE id = ?",
+    )
+      .bind(audioA, episode.id)
+      .run();
+    await env.DB.prepare("UPDATE shows SET artwork_object_id = ? WHERE id = ?")
+      .bind(artwork, show.id)
+      .run();
+
+    // Replacement audio B: an initiated intent for the same episode, PUT to R2.
+    const replacement = await initiateOk(audioInitiateBody({ size: 64 }));
+    await putObject(replacement.storageObjectId, mp3Bytes(64), "audio/mpeg");
+
+    const feedDeps = {
+      db: env.DB,
+      media: env.MEDIA,
+      publicBaseUrl: env.PUBLIC_BASE_URL as string,
+    };
+
+    let batchCalls = 0;
+    const realBatch = env.DB.batch.bind(env.DB);
+    const racingDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            batchCalls += 1;
+            if (batchCalls === 1) {
+              // Right as the attach batch is first issued, publish concurrently:
+              // this flips the episode to published, bumps the revision, and
+              // synchronizes feeds/{slug}.xml against the OLD audio A, leaving the
+              // show synchronized -- all before the attach swaps the enclosure.
+              const published = await publishEpisode(feedDeps, episode.id);
+              expect(published.ok).toBe(true);
+            }
+            return realBatch(statements);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as D1Database;
+
+    const deps: UploadDeps = { ...testDeps(), db: racingDb };
+    const result = await completeUpload(deps, replacement.uploadId, {});
+
+    expect(result.ok).toBe(true);
+
+    // The published episode now points at the replacement B; A was orphaned.
+    const episodeRow = await getEpisodeRow(episode.id);
+    expect(episodeRow.audio_object_id).toBe(replacement.storageObjectId);
+    expect((await objectRow(audioA)).status).toBe("orphaned");
+
+    // The show must NOT be left synchronized against the stale enclosure: the
+    // attach bumped feed_revision past the published revision, so the feed reads
+    // dirty and the operator gets a signal. Without the fix these are equal and
+    // the corruption is silent.
+    const feedRow = await env.DB.prepare(
+      "SELECT feed_revision, feed_published_revision FROM shows WHERE id = ?",
+    )
+      .bind(show.id)
+      .first<{ feed_revision: number; feed_published_revision: number }>();
+    expect(feedRow).not.toBeNull();
+    expect(feedRow?.feed_revision).toBeGreaterThan(feedRow?.feed_published_revision ?? 0);
   });
 
   it("returns 404 for an unknown upload id", async () => {
