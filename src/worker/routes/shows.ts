@@ -6,6 +6,7 @@ import type { AppEnv } from "../app-env";
 import {
   createShow,
   deactivateShow,
+  regenerateShowFeed,
   showRowToResource,
   updateShow,
   type ShowErrorCode,
@@ -13,6 +14,7 @@ import {
 import { errorResponse } from "../middleware/errors";
 import { getShowById, listShows } from "../services/db";
 import { readJsonBody, validationFailed } from "./common";
+import { feedSyncDeps } from "./episodes";
 
 /**
  * Show management routes (mvp-design.md section 15.2), mounted at /api/shows
@@ -89,6 +91,33 @@ showRoutes.patch("/:id", async (c) => {
   const result = await updateShow(c.env.DB, c.req.param("id"), parsed.data);
   if (!result.ok) {
     return showError(c, result.error);
+  }
+  return c.json(showRowToResource(result.show));
+});
+
+showRoutes.post("/:id/regenerate-feed", async (c) => {
+  const result = await regenerateShowFeed(feedSyncDeps(c), c.req.param("id"));
+  if (!result.ok) {
+    switch (result.error) {
+      case "NOT_FOUND":
+        return showError(c, "NOT_FOUND");
+      case "SHOW_NOT_FEED_READY":
+        return errorResponse(
+          c,
+          409,
+          "SHOW_NOT_FEED_READY",
+          "The show is missing feed requirements (section 12.1)",
+          result.details,
+        );
+      case "FEED_WRITE_FAILED":
+        return errorResponse(
+          c,
+          502,
+          "FEED_WRITE_FAILED",
+          "The canonical feed could not be written; retry regenerate-feed",
+          { retryable: true },
+        );
+    }
   }
   return c.json(showRowToResource(result.show));
 });

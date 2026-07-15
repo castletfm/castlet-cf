@@ -6,18 +6,23 @@ import {
   deleteEpisodeById,
   getEpisodeById,
   getShowById,
+  getStorageObjectById,
   incrementShowFeedRevision,
+  incrementShowFeedRevisionStatement,
   insertEpisode,
   listEpisodesByShow,
+  lockShowSlugStatement,
+  publishEpisodeRow,
+  unpublishEpisodeRow,
   updateEpisodeMetadata,
   type EpisodeRow,
 } from "../services/db";
+import { checkShowFeedReady, synchronizeFeed, type FeedSyncDeps } from "../services/feed-sync";
 
 /**
- * Episode business rules (mvp-design.md sections 9.1, 12.2, 12.5).
- *
- * In this phase episodes exist only as drafts plus the status transitions the
- * deletion rules need; publish/unpublish endpoints arrive in Phase 4.
+ * Episode business rules (mvp-design.md sections 9.1, 12.2, 12.3, 12.4,
+ * and 12.5), including publish/unpublish with synchronous canonical feed
+ * regeneration.
  */
 
 export type EpisodeCreateInput = z.output<typeof episodeCreateSchema>;
@@ -147,6 +152,181 @@ export async function updateEpisode(
   // its metadata changes are feed-affecting (9.1). Drafts never are.
   if (FEED_AFFECTING_STATUSES.has(current.status)) {
     await incrementShowFeedRevision(db, current.show_id, now);
+  }
+
+  const row = await getEpisodeById(db, id);
+  if (row === null) {
+    return { ok: false, error: "NOT_FOUND" };
+  }
+  return { ok: true, episode: row };
+}
+
+// ---------------------------------------------------------------------------
+// Publish / unpublish (sections 12.2, 12.3, 12.4)
+// ---------------------------------------------------------------------------
+
+export type PublishErrorCode =
+  | "NOT_FOUND"
+  | "SHOW_NOT_FOUND"
+  | "SHOW_INACTIVE"
+  | "EPISODE_ALREADY_PUBLISHED"
+  | "EPISODE_NOT_PUBLISHED"
+  | "EPISODE_NOT_PUBLISHABLE"
+  | "SHOW_NOT_FEED_READY"
+  | "FEED_WRITE_FAILED";
+
+export type PublishFailure = {
+  ok: false;
+  error: PublishErrorCode;
+  details?: Record<string, unknown>;
+};
+
+export type PublishResult = { ok: true; episode: EpisodeRow } | PublishFailure;
+
+/** Audio MIME types a published enclosure may carry (section 12.2). */
+const PUBLISHABLE_AUDIO_TYPES: ReadonlySet<string> = new Set(["audio/mpeg", "audio/mp4"]);
+
+/**
+ * Episode publish requirements (section 12.2): title, non-empty description,
+ * ACTIVE audio object with a recognized MIME type and positive byte length,
+ * and a GUID. Returns the names of everything that is missing.
+ */
+async function missingPublishRequirements(db: D1Database, episode: EpisodeRow): Promise<string[]> {
+  const missing: string[] = [];
+  if (episode.title.trim() === "") {
+    missing.push("title");
+  }
+  if (episode.description.trim() === "") {
+    missing.push("description");
+  }
+  if (episode.guid.trim() === "") {
+    missing.push("guid");
+  }
+
+  const audio =
+    episode.audio_object_id === null
+      ? null
+      : await getStorageObjectById(db, episode.audio_object_id);
+  if (audio === null || audio.status !== "active" || audio.kind !== "audio") {
+    missing.push("audio");
+  } else {
+    if (!PUBLISHABLE_AUDIO_TYPES.has(audio.content_type)) {
+      missing.push("audioContentType");
+    }
+    if (audio.byte_length === null || audio.byte_length <= 0) {
+      missing.push("audioByteLength");
+    }
+  }
+  return missing;
+}
+
+/** Maps a failed feed synchronization onto the publish error space. */
+function feedSyncFailure(
+  sync: Exclude<Awaited<ReturnType<typeof synchronizeFeed>>, { ok: true }>,
+): PublishFailure {
+  switch (sync.error) {
+    case "NOT_FOUND":
+      return { ok: false, error: "SHOW_NOT_FOUND" };
+    case "SHOW_NOT_FEED_READY":
+      return { ok: false, error: "SHOW_NOT_FEED_READY", details: { missing: sync.missing } };
+    case "FEED_WRITE_FAILED":
+      return { ok: false, error: "FEED_WRITE_FAILED" };
+  }
+}
+
+/**
+ * POST /api/episodes/{id}/publish (section 12.3): validates the episode and
+ * the show's feed readiness, publishes at the current UTC time, locks the
+ * show slug on first publication, bumps the feed revision, and regenerates
+ * the canonical feed synchronously. On an R2 write failure the D1 publish
+ * state is retained, feed_error is stored, and a retryable FEED_WRITE_FAILED
+ * is returned (route: 502).
+ */
+export async function publishEpisode(deps: FeedSyncDeps, id: string): Promise<PublishResult> {
+  const { db } = deps;
+
+  const episode = await getEpisodeById(db, id);
+  if (episode === null) {
+    return { ok: false, error: "NOT_FOUND" };
+  }
+  if (episode.status === "published") {
+    return { ok: false, error: "EPISODE_ALREADY_PUBLISHED" };
+  }
+  if (episode.status === "archived") {
+    return { ok: false, error: "EPISODE_NOT_PUBLISHABLE", details: { missing: ["status"] } };
+  }
+
+  const missing = await missingPublishRequirements(db, episode);
+  if (missing.length > 0) {
+    return { ok: false, error: "EPISODE_NOT_PUBLISHABLE", details: { missing } };
+  }
+
+  const show = await getShowById(db, episode.show_id);
+  if (show === null) {
+    return { ok: false, error: "SHOW_NOT_FOUND" };
+  }
+  if (show.status !== "active") {
+    return { ok: false, error: "SHOW_INACTIVE" };
+  }
+  const readiness = await checkShowFeedReady(db, show);
+  if (!readiness.ready) {
+    return { ok: false, error: "SHOW_NOT_FEED_READY", details: { missing: readiness.missing } };
+  }
+
+  // Publish at the current UTC time; the status guard means a concurrent
+  // publish loses cleanly, and the atomic version increment preserves any
+  // concurrent version bumps (section 9.1).
+  const nowIso = new Date().toISOString();
+  const published = await publishEpisodeRow(db, id, nowIso);
+  if (!published) {
+    return { ok: false, error: "EPISODE_ALREADY_PUBLISHED" };
+  }
+
+  // Slug lock is a guarded no-op after the first publication (section 9.1).
+  await db.batch([
+    lockShowSlugStatement(db, show.id, nowIso),
+    incrementShowFeedRevisionStatement(db, show.id, nowIso),
+  ]);
+
+  const sync = await synchronizeFeed(deps, show.id);
+  if (!sync.ok) {
+    // The publish itself stays committed in D1 (section 12.3).
+    return feedSyncFailure(sync);
+  }
+
+  const row = await getEpisodeById(db, id);
+  if (row === null) {
+    return { ok: false, error: "NOT_FOUND" };
+  }
+  return { ok: true, episode: row };
+}
+
+/**
+ * POST /api/episodes/{id}/unpublish (section 12.4): status becomes
+ * unpublished (GUID and media retained), the feed revision is bumped, and
+ * the feed is regenerated without the item — an empty feed stays published.
+ */
+export async function unpublishEpisode(deps: FeedSyncDeps, id: string): Promise<PublishResult> {
+  const { db } = deps;
+
+  const episode = await getEpisodeById(db, id);
+  if (episode === null) {
+    return { ok: false, error: "NOT_FOUND" };
+  }
+  if (episode.status !== "published") {
+    return { ok: false, error: "EPISODE_NOT_PUBLISHED" };
+  }
+
+  const nowIso = new Date().toISOString();
+  const unpublished = await unpublishEpisodeRow(db, id, nowIso);
+  if (!unpublished) {
+    return { ok: false, error: "EPISODE_NOT_PUBLISHED" };
+  }
+  await incrementShowFeedRevision(db, episode.show_id, nowIso);
+
+  const sync = await synchronizeFeed(deps, episode.show_id);
+  if (!sync.ok) {
+    return feedSyncFailure(sync);
   }
 
   const row = await getEpisodeById(db, id);

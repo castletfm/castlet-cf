@@ -51,6 +51,8 @@ export interface ShowResource {
   feedPublishedRevision: number;
   feedLastGeneratedAt: string | null;
   feedError: string | null;
+  /** True when feedPublishedRevision === feedRevision and feedError is null. */
+  feedSynchronized: boolean;
   slugLockedAt: string | null;
   version: number;
   createdAt: string;

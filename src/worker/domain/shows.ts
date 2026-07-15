@@ -11,6 +11,7 @@ import {
   updateShowMetadata,
   type ShowRow,
 } from "../services/db";
+import { synchronizeFeed, type FeedSyncDeps } from "../services/feed-sync";
 
 /**
  * Show business rules (mvp-design.md sections 9.1, 12.1, 12.5).
@@ -45,6 +46,9 @@ export function showRowToResource(row: ShowRow): ShowResource {
     feedPublishedRevision: row.feed_published_revision,
     feedLastGeneratedAt: row.feed_last_generated_at,
     feedError: row.feed_error,
+    // Synchronized iff the canonical R2 feed was built from the current
+    // revision and the last write succeeded (section 9.1).
+    feedSynchronized: row.feed_published_revision === row.feed_revision && row.feed_error === null,
     slugLockedAt: row.slug_locked_at,
     version: row.version,
     createdAt: row.created_at,
@@ -152,6 +156,39 @@ export async function updateShow(
   }
 
   const row = await getShowById(db, id);
+  if (row === null) {
+    return { ok: false, error: "NOT_FOUND" };
+  }
+  return { ok: true, show: row };
+}
+
+export type RegenerateFeedResult =
+  | { ok: true; show: ShowRow }
+  | {
+      ok: false;
+      error: "NOT_FOUND" | "SHOW_NOT_FEED_READY" | "FEED_WRITE_FAILED";
+      details?: Record<string, unknown>;
+    };
+
+/**
+ * POST /api/shows/{id}/regenerate-feed (section 15.2): re-runs canonical
+ * feed synchronization for a feed-ready show. This is the retry path after a
+ * stored feed_error, and it is also allowed when the revisions already match
+ * (an idempotent regenerate).
+ */
+export async function regenerateShowFeed(
+  deps: FeedSyncDeps,
+  id: string,
+): Promise<RegenerateFeedResult> {
+  const sync = await synchronizeFeed(deps, id);
+  if (!sync.ok) {
+    if (sync.error === "SHOW_NOT_FEED_READY") {
+      return { ok: false, error: sync.error, details: { missing: sync.missing } };
+    }
+    return { ok: false, error: sync.error };
+  }
+
+  const row = await getShowById(deps.db, id);
   if (row === null) {
     return { ok: false, error: "NOT_FOUND" };
   }

@@ -235,6 +235,60 @@ export async function incrementShowFeedRevision(
   await incrementShowFeedRevisionStatement(db, showId, updatedAt).run();
 }
 
+/**
+ * Locks the show slug at first publication (section 9.1). The IS NULL guard
+ * makes the statement a no-op on every later publish, so it can be issued
+ * unconditionally. Like the feed-revision bump, it does not touch `version`:
+ * publishing an episode must not invalidate the operator's cached show
+ * version.
+ */
+export function lockShowSlugStatement(
+  db: D1Database,
+  showId: string,
+  lockedAt: string,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      "UPDATE shows SET slug_locked_at = ?, updated_at = ? WHERE id = ? AND slug_locked_at IS NULL",
+    )
+    .bind(lockedAt, lockedAt, showId);
+}
+
+/**
+ * Records a successful canonical feed write (section 12.3): the published
+ * revision catches up to the revision the XML was built from, the generation
+ * timestamp is refreshed, and any previous feed_error is cleared.
+ */
+export async function markShowFeedSynchronized(
+  db: D1Database,
+  showId: string,
+  revision: number,
+  generatedAt: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE shows SET
+         feed_published_revision = ?, feed_last_generated_at = ?,
+         feed_error = NULL, updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(revision, generatedAt, generatedAt, showId)
+    .run();
+}
+
+/** Stores a concise feed synchronization error (section 12.3). */
+export async function setShowFeedError(
+  db: D1Database,
+  showId: string,
+  error: string,
+  updatedAt: string,
+): Promise<void> {
+  await db
+    .prepare("UPDATE shows SET feed_error = ?, updated_at = ? WHERE id = ?")
+    .bind(error, updatedAt, showId)
+    .run();
+}
+
 // ---------------------------------------------------------------------------
 // Episodes
 // ---------------------------------------------------------------------------
@@ -336,6 +390,83 @@ export async function updateEpisodeMetadata(
     )
     .run();
   return result.meta.changes > 0;
+}
+
+/**
+ * Publishes an episode (section 12.3): sets the publish timestamp and status
+ * in one guarded statement. The status guard means exactly one concurrent
+ * publish can win, and `version = version + 1` is an atomic increment, so a
+ * concurrent metadata PATCH's version bump is never clobbered. Returns false
+ * when no row matched (missing, already published, or archived).
+ */
+export async function publishEpisodeRow(
+  db: D1Database,
+  id: string,
+  publishedAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE episodes
+       SET status = 'published', published_at = ?, version = version + 1, updated_at = ?
+       WHERE id = ? AND status IN ('draft', 'unpublished')`,
+    )
+    .bind(publishedAt, publishedAt, id)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Unpublishes an episode (section 12.4): status only; GUID, media, and the
+ * original publish timestamp are retained. Returns false when no row matched.
+ */
+export async function unpublishEpisodeRow(
+  db: D1Database,
+  id: string,
+  updatedAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE episodes
+       SET status = 'unpublished', version = version + 1, updated_at = ?
+       WHERE id = ? AND status = 'published'`,
+    )
+    .bind(updatedAt, id)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/** Episode row joined with its active audio object's feed-relevant columns. */
+export interface FeedEpisodeRow extends EpisodeRow {
+  audio_public_path: string;
+  audio_content_type: string;
+  audio_byte_length: number;
+}
+
+/**
+ * Published episodes with their ACTIVE audio objects, newest first, capped
+ * (section 13.2). Uses idx_episodes_show_status_date; the id tiebreak keeps
+ * ordering stable when publish timestamps collide.
+ */
+export async function listPublishedEpisodesForFeed(
+  db: D1Database,
+  showId: string,
+  limit: number,
+): Promise<FeedEpisodeRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT e.*,
+              so.public_path AS audio_public_path,
+              so.content_type AS audio_content_type,
+              so.byte_length AS audio_byte_length
+       FROM episodes e
+       JOIN storage_objects so ON so.id = e.audio_object_id
+       WHERE e.show_id = ? AND e.status = 'published' AND so.status = 'active'
+       ORDER BY e.published_at DESC, e.id
+       LIMIT ?`,
+    )
+    .bind(showId, limit)
+    .all<FeedEpisodeRow>();
+  return result.results;
 }
 
 /**
