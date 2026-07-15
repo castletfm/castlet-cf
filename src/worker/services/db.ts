@@ -484,8 +484,12 @@ export async function updateEpisodeMetadata(
  * concurrent metadata PATCH that slips in after the readiness check — bumping
  * the version and, say, blanking the description — changes zero rows here
  * instead of publishing a now-invalid episode. `version = version + 1` is an
- * atomic increment. Returns false when no row matched (missing, already
- * published, archived, or the validated version was superseded).
+ * atomic increment. The `EXISTS` guard also fences on the owning show being
+ * active at write time, so a concurrent deactivate — which bumps the show
+ * version, not the episode version, and so is invisible to the version guard —
+ * cannot publish an episode onto a just-deactivated show. Returns false when no
+ * row matched (missing, already published, archived, the validated version was
+ * superseded, or the show is no longer active).
  */
 export async function publishEpisodeRow(
   db: D1Database,
@@ -497,7 +501,10 @@ export async function publishEpisodeRow(
     .prepare(
       `UPDATE episodes
        SET status = 'published', published_at = ?, version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ? AND status IN ('draft', 'unpublished')`,
+       WHERE id = ? AND version = ? AND status IN ('draft', 'unpublished')
+         AND EXISTS (
+           SELECT 1 FROM shows WHERE shows.id = episodes.show_id AND shows.status = 'active'
+         )`,
     )
     .bind(publishedAt, publishedAt, id, expectedVersion)
     .run();
