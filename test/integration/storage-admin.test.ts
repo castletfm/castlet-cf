@@ -240,4 +240,11 @@ describe("DELETE /api/storage/{id}", () => {
     const res = await purge(crypto.randomUUID());
     expect(res.status).toBe(404);
   });
+
+  it("rejects a malformed (non-UUID) id with 422 before any lookup", async () => {
+    const res = await purge("not-a-uuid");
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("VALIDATION_FAILED");
+  });
 });

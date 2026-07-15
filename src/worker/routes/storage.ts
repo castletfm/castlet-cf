@@ -1,11 +1,16 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { z } from "zod";
 
 import type { OrphanListResponse, OrphanedObjectResource } from "../../shared/contracts";
 import type { AppEnv } from "../app-env";
 import { purgeStorageObject, type PurgeErrorCode } from "../domain/storage";
 import { errorResponse } from "../middleware/errors";
 import { listOrphanedStorageObjects, type OrphanedStorageObjectRow } from "../services/db";
+import { validationFailed } from "./common";
+
+/** Storage object ids are UUIDs; reject a malformed path param before any lookup. */
+const objectIdParamSchema = z.uuid();
 
 /**
  * Storage administration (mvp-design.md section 15.2):
@@ -58,7 +63,11 @@ storageRoutes.get("/orphans", async (c) => {
 });
 
 storageRoutes.delete("/:id", async (c) => {
-  const result = await purgeStorageObject({ db: c.env.DB, media: c.env.MEDIA }, c.req.param("id"));
+  const parsedId = objectIdParamSchema.safeParse(c.req.param("id"));
+  if (!parsedId.success) {
+    return validationFailed(c, parsedId.error);
+  }
+  const result = await purgeStorageObject({ db: c.env.DB, media: c.env.MEDIA }, parsedId.data);
   if (!result.ok) {
     return purgeError(c, result.error);
   }
