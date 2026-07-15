@@ -13,7 +13,7 @@ export const CSRF_COOKIE_NAME = "castlet_csrf";
 
 /**
  * API paths reachable without a session (mvp-design.md section 15, plus
- * /api/auth/config — a deviation recorded in README.md).
+ * /api/auth/config — see docs/engineering-notes.md).
  */
 export const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/api/health",
