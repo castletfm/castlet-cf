@@ -78,6 +78,13 @@ showRoutes.get("/:id", async (c) => {
   return c.json(showRowToResource(row));
 });
 
+// A feed-affecting metadata PATCH increments shows.feed_revision (marking the
+// feed dirty) but intentionally does NOT synchronously re-write feeds/{slug}.xml.
+// Design sections 12.3/12.4 reserve synchronous feed regeneration for publish and
+// unpublish; sections 9 and 16 make every other feed-affecting mutation surface as
+// a feed-dirty banner (D1 and R2 revisions differ) that the operator clears with
+// regenerate-feed. The transiently stale R2 object is the design's mark-dirty flow,
+// not a missing sync.
 showRoutes.patch("/:id", async (c) => {
   const read = await readJsonBody(c);
   if (!read.ok) {
