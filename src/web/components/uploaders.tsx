@@ -9,6 +9,7 @@ import { useCallback, useReducer, useRef, useState, type ReactNode } from "react
 import { MAX_ARTWORK_BYTES, MAX_AUDIO_BYTES } from "../../shared/constants";
 import type { EpisodeResource, StorageObjectResource } from "../../shared/contracts";
 import { ApiError, completeUpload, initiateUpload } from "../api";
+import { readAudioDuration } from "../lib/audio";
 import { formatBytes } from "../lib/format";
 import { checkArtworkDimensions, readImageDimensions } from "../lib/image";
 import {
@@ -78,25 +79,6 @@ function audioContentType(file: File): "audio/mpeg" | "audio/mp4" | null {
   if (lower.endsWith(".mp3")) return "audio/mpeg";
   if (lower.endsWith(".m4a")) return "audio/mp4";
   return null;
-}
-
-/** Best-effort audio duration read via a detached <audio> element. */
-function readAudioDuration(file: Blob): Promise<number | null> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file);
-    const audio = document.createElement("audio");
-    audio.preload = "metadata";
-    audio.onloadedmetadata = () => {
-      const seconds = Number.isFinite(audio.duration) ? Math.round(audio.duration) : null;
-      URL.revokeObjectURL(url);
-      resolve(seconds);
-    };
-    audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve(null);
-    };
-    audio.src = url;
-  });
 }
 
 export function ArtworkUploader({
