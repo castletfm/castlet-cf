@@ -35,4 +35,13 @@ export interface Env {
    * endpoint reports `available: false` instead of failing.
    */
   ANALYTICS_API_TOKEN?: string;
+  /**
+   * Development/test-only flag. When exactly "1", the Worker exposes the
+   * upload shim at PUT /__e2e/r2/* so the Playwright e2e can land bytes in the
+   * local R2 bucket (a local `wrangler dev` has no reachable presigned-PUT
+   * endpoint). Absent from wrangler.jsonc `vars` and .dev.vars.example, so a
+   * real deployment never sets it and the shim stays 404. See
+   * routes/e2e-shim.ts and mvp-design.md section 18.3.
+   */
+  E2E_UPLOAD_SHIM?: string;
 }

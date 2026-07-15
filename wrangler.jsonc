@@ -10,7 +10,11 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/feeds/*", "/media/*", "/artwork/*"],
+    // "/__e2e/*" reaches the dev/test-only upload shim (routes/e2e-shim.ts),
+    // which is inert unless E2E_UPLOAD_SHIM === "1"; in a real deployment the
+    // worker just returns 404 for it. Without worker-first routing the assets
+    // layer rejects the shim's PUT with 405.
+    "run_worker_first": ["/api/*", "/feeds/*", "/media/*", "/artwork/*", "/__e2e/*"],
   },
   "d1_databases": [
     {
