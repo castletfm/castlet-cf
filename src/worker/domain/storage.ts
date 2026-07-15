@@ -373,10 +373,14 @@ export async function completeUpload(
   // Read the owner before claiming so the previous attachment can be
   // orphaned; the owner was validated at initiation and cannot be hard
   // deleted out from under a pending audio upload in normal operation.
+  // `buildAttach` produces a compare-and-set attach against the owner's
+  // currently-observed attachment, and `readCurrentAttachment` re-reads it so
+  // a lost race can retry against the truly-current value (see below).
   let previousObjectId: string | null;
   let feedAffected: boolean;
-  let attachOwner: D1PreparedStatement;
   let feedShowId: string;
+  let buildAttach: (expectedPreviousObjectId: string | null) => D1PreparedStatement;
+  let readCurrentAttachment: () => Promise<string | null>;
   if (object.owner_kind === "show") {
     const show = await getShowById(db, object.owner_id);
     if (show === null) {
@@ -385,7 +389,12 @@ export async function completeUpload(
     previousObjectId = show.artwork_object_id;
     feedAffected = true; // show artwork is always part of the feed
     feedShowId = show.id;
-    attachOwner = attachShowArtworkStatement(db, show.id, object.id, nowIso);
+    buildAttach = (expectedPreviousObjectId) =>
+      attachShowArtworkStatement(db, show.id, object.id, nowIso, expectedPreviousObjectId);
+    readCurrentAttachment = async () => {
+      const current = await getShowById(db, object.owner_id);
+      return current?.artwork_object_id ?? null;
+    };
   } else {
     const episode = await getEpisodeById(db, object.owner_id);
     if (episode === null) {
@@ -394,13 +403,19 @@ export async function completeUpload(
     previousObjectId = episode.audio_object_id;
     feedAffected = FEED_AFFECTING_EPISODE_STATUSES.has(episode.status);
     feedShowId = episode.show_id;
-    attachOwner = attachEpisodeAudioStatement(
-      db,
-      episode.id,
-      object.id,
-      input.durationSeconds ?? null,
-      nowIso,
-    );
+    buildAttach = (expectedPreviousObjectId) =>
+      attachEpisodeAudioStatement(
+        db,
+        episode.id,
+        object.id,
+        input.durationSeconds ?? null,
+        nowIso,
+        expectedPreviousObjectId,
+      );
+    readCurrentAttachment = async () => {
+      const current = await getEpisodeById(db, object.owner_id);
+      return current?.audio_object_id ?? null;
+    };
   }
 
   // Race-safe claim that also enforces the daily completed-upload cap in the
@@ -429,17 +444,47 @@ export async function completeUpload(
   // Move the declared reservation to active storage using verified bytes.
   await commitReservedBytes(db, intent.expected_size, head.size);
 
-  const statements: D1PreparedStatement[] = [
-    activateStorageObjectStatement(db, object.id, head.size, head.etag, nowIso),
-    attachOwner,
-  ];
-  if (previousObjectId !== null && previousObjectId !== object.id) {
-    statements.push(orphanStorageObjectStatement(db, previousObjectId, nowIso));
+  // Activate the object and swap it onto its owner with a compare-and-set, so
+  // two concurrent completions for the same owner can never leave a
+  // just-attached object active-but-unreferenced (invariant 9.1). The attach
+  // applies only while the owner still points at the attachment we observed;
+  // the displaced object is orphaned in the same batch, keeping the winning
+  // path atomic. A lost attach (zero changed rows) means another completion
+  // attached first: re-read the owner's now-current attachment and retry
+  // against it, orphaning whatever we actually displace. Because the orphan
+  // guard is `status = 'active'`, orphaning a value we lost the race for is an
+  // idempotent no-op rather than a double-orphan. The end state after any
+  // interleaving: exactly one object attached+active, every other completed
+  // object for the owner orphaned.
+  const activate = activateStorageObjectStatement(db, object.id, head.size, head.etag, nowIso);
+  let displaced = previousObjectId;
+  let activatePending = true;
+  for (;;) {
+    const statements: D1PreparedStatement[] = [];
+    if (activatePending) {
+      statements.push(activate);
+    }
+    const attachIndex = statements.length;
+    statements.push(buildAttach(displaced));
+    if (displaced !== null && displaced !== object.id) {
+      statements.push(orphanStorageObjectStatement(db, displaced, nowIso));
+    }
+    const results = await db.batch(statements);
+    activatePending = false;
+    if ((results[attachIndex]?.meta.changes ?? 0) > 0) {
+      break; // won the attach; the displaced object (if any) is now orphaned
+    }
+    // Another completion attached first. Re-read the owner's current
+    // attachment and retry the CAS against it.
+    const currentAttachment = await readCurrentAttachment();
+    if (currentAttachment === object.id) {
+      break; // our object is already the attachment; nothing left to displace
+    }
+    displaced = currentAttachment;
   }
   if (feedAffected) {
-    statements.push(incrementShowFeedRevisionStatement(db, feedShowId, nowIso));
+    await incrementShowFeedRevisionStatement(db, feedShowId, nowIso).run();
   }
-  await db.batch(statements);
 
   const activated = await getStorageObjectById(db, object.id);
   if (activated === null) {

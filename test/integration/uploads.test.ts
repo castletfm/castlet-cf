@@ -7,7 +7,11 @@ import type {
   StorageObjectResource,
   UploadInitiateResponse,
 } from "../../src/shared/contracts";
-import { sweepExpiredUploadIntents, type UploadDeps } from "../../src/worker/domain/storage";
+import {
+  completeUpload,
+  sweepExpiredUploadIntents,
+  type UploadDeps,
+} from "../../src/worker/domain/storage";
 import {
   BASE,
   createAuthContext,
@@ -695,6 +699,54 @@ describe("POST /api/uploads/{id}/complete", () => {
     } finally {
       await cleanup();
     }
+  });
+
+  it("keeps exactly one audio object attached under concurrent completion for one episode", async () => {
+    // Two uploads for the SAME episode are initiated and PUT, then completed
+    // simultaneously via Promise.all. Both completions read the episode's
+    // current (null) audio attachment before either attaches. An unconditional
+    // attach lets the second overwrite the first, leaving the first object
+    // active but referenced by nobody and never orphaned -- an invariant-9.1
+    // storage leak. The compare-and-set attach forces the losing completion to
+    // re-read and displace the now-current object, so exactly one object stays
+    // attached+active and the other is orphaned.
+    //
+    // Driven through the domain function directly (not the HTTP route) because
+    // the workers test pool serializes back-to-back SELF.fetch handlers, which
+    // would hide the race; two concurrent completeUpload calls interleave at
+    // their D1/R2 awaits and both capture the same pre-attach owner state.
+    const before = await usage();
+
+    const first = await initiateOk(audioInitiateBody({ size: 64 }));
+    const second = await initiateOk(audioInitiateBody({ size: 80 }));
+    await putObject(first.storageObjectId, mp3Bytes(64), "audio/mpeg");
+    await putObject(second.storageObjectId, mp3Bytes(80), "audio/mpeg");
+
+    const deps = testDeps();
+    const [a, b] = await Promise.all([
+      completeUpload(deps, first.uploadId, {}),
+      completeUpload(deps, second.uploadId, {}),
+    ]);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+
+    // The episode references exactly one of the two objects.
+    const attachedId = (await getEpisodeRow(episode.id)).audio_object_id ?? "";
+    expect([first.storageObjectId, second.storageObjectId]).toContain(attachedId);
+    const orphanedId =
+      attachedId === first.storageObjectId ? second.storageObjectId : first.storageObjectId;
+
+    // The attached object is active; the displaced one is orphaned -- never a
+    // second active-but-unreferenced object.
+    expect((await objectRow(attachedId)).status).toBe("active");
+    expect((await objectRow(orphanedId)).status).toBe("orphaned");
+
+    // Both objects' bytes count as active storage: the winner's stay active,
+    // and the orphan's remain active until a later purge (orphan accounting).
+    // Reservations are fully committed.
+    const after = await usage();
+    expect(after.reserved_bytes).toBe(before.reserved_bytes);
+    expect(after.active_bytes - before.active_bytes).toBe(64 + 80);
   });
 
   it("returns 404 for an unknown upload id", async () => {

@@ -631,32 +631,48 @@ export function orphanStorageObjectStatement(
     .bind(orphanedAt, id);
 }
 
+/**
+ * Compare-and-set attach of a show's artwork object: applies only while the
+ * show still points at `expectedPreviousObjectId` (null-safe via SQLite `IS`).
+ * Under concurrent completions this lets exactly one caller swap the
+ * attachment, so a just-attached object is never left active-but-unreferenced
+ * (invariant 9.1). Zero changed rows means another completion won the race and
+ * the caller must re-read the current attachment and retry.
+ */
 export function attachShowArtworkStatement(
   db: D1Database,
   showId: string,
   storageObjectId: string,
   updatedAt: string,
+  expectedPreviousObjectId: string | null,
 ): D1PreparedStatement {
   return db
     .prepare(
-      "UPDATE shows SET artwork_object_id = ?, version = version + 1, updated_at = ? WHERE id = ?",
+      `UPDATE shows SET artwork_object_id = ?, version = version + 1, updated_at = ?
+       WHERE id = ? AND artwork_object_id IS ?`,
     )
-    .bind(storageObjectId, updatedAt, showId);
+    .bind(storageObjectId, updatedAt, showId, expectedPreviousObjectId);
 }
 
+/**
+ * Compare-and-set attach of an episode's audio object: applies only while the
+ * episode still points at `expectedPreviousObjectId` (null-safe via SQLite
+ * `IS`). Same concurrency contract as {@link attachShowArtworkStatement}.
+ */
 export function attachEpisodeAudioStatement(
   db: D1Database,
   episodeId: string,
   storageObjectId: string,
   durationSeconds: number | null,
   updatedAt: string,
+  expectedPreviousObjectId: string | null,
 ): D1PreparedStatement {
   return db
     .prepare(
       `UPDATE episodes
        SET audio_object_id = ?, duration_seconds = COALESCE(?, duration_seconds),
            version = version + 1, updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND audio_object_id IS ?`,
     )
-    .bind(storageObjectId, durationSeconds, updatedAt, episodeId);
+    .bind(storageObjectId, durationSeconds, updatedAt, episodeId, expectedPreviousObjectId);
 }
