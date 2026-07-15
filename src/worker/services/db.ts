@@ -559,6 +559,32 @@ export async function listPublishedEpisodesForFeed(
 }
 
 /**
+ * Shows whose canonical feed is out of date or failed to synchronize
+ * (section 15.2, GET /api/dashboard): feed_published_revision lags
+ * feed_revision, or a feed_error is recorded. The shows table is bounded to
+ * a single operator's catalog, so this small scan is acceptable.
+ */
+export async function listFeedDirtyShows(db: D1Database): Promise<ShowRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT * FROM shows
+       WHERE feed_published_revision != feed_revision OR feed_error IS NOT NULL
+       ORDER BY updated_at DESC, id`,
+    )
+    .all<ShowRow>();
+  return result.results;
+}
+
+/** Most recently created episodes across all shows (uses idx_episodes_created). */
+export async function listRecentEpisodes(db: D1Database, limit: number): Promise<EpisodeRow[]> {
+  const result = await db
+    .prepare("SELECT * FROM episodes ORDER BY created_at DESC, id LIMIT ?")
+    .bind(limit)
+    .all<EpisodeRow>();
+  return result.results;
+}
+
+/**
  * Deletes a non-published episode (section 12.5: a published episode must be
  * unpublished first). The status guard makes the rule race-safe at the SQL
  * level. Returns false when no row matched.
@@ -864,6 +890,94 @@ export function orphanStorageObjectStatement(
        WHERE id = ? AND status = 'active'`,
     )
     .bind(orphanedAt, id);
+}
+
+/** Orphaned storage object joined with its owner's title for review lists. */
+export interface OrphanedStorageObjectRow extends StorageObjectRow {
+  owner_title: string | null;
+}
+
+/**
+ * Orphaned objects with owner info (section 15.2, GET /api/storage/orphans).
+ * The status filter uses idx_storage_status; the orphan set is small by
+ * construction (operators purge deliberately, section 21.2).
+ */
+export async function listOrphanedStorageObjects(
+  db: D1Database,
+): Promise<OrphanedStorageObjectRow[]> {
+  const result = await db
+    .prepare(
+      `SELECT so.*,
+              CASE so.owner_kind WHEN 'show' THEN s.title ELSE e.title END AS owner_title
+       FROM storage_objects so
+       LEFT JOIN shows s ON so.owner_kind = 'show' AND s.id = so.owner_id
+       LEFT JOIN episodes e ON so.owner_kind = 'episode' AND e.id = so.owner_id
+       WHERE so.status = 'orphaned'
+       ORDER BY so.orphaned_at DESC, so.id`,
+    )
+    .all<OrphanedStorageObjectRow>();
+  return result.results;
+}
+
+/** Upload intent for a storage object (storage_object_id is UNIQUE). */
+export async function getUploadIntentByStorageObjectId(
+  db: D1Database,
+  storageObjectId: string,
+): Promise<UploadIntentRow | null> {
+  return db
+    .prepare("SELECT * FROM upload_intents WHERE storage_object_id = ?")
+    .bind(storageObjectId)
+    .first<UploadIntentRow>();
+}
+
+/**
+ * Race-safe purge claim: transitions an object to 'deleted' only from the
+ * expected purgeable status, so exactly one concurrent purge can win and the
+ * quota decrement that follows a successful claim happens at most once.
+ */
+export async function claimStorageObjectPurge(
+  db: D1Database,
+  id: string,
+  fromStatus: "orphaned" | "rejected" | "pending",
+  deletedAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      "UPDATE storage_objects SET status = 'deleted', deleted_at = ? WHERE id = ? AND status = ?",
+    )
+    .bind(deletedAt, id, fromStatus)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Bytes that should be recorded as active storage: every object still
+ * counted against the quota, i.e. active plus orphaned (section 9.1:
+ * orphaned objects count until purged from R2).
+ */
+export async function sumCommittedStorageBytes(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(byte_length), 0) AS total
+       FROM storage_objects WHERE status IN ('active', 'orphaned')`,
+    )
+    .first<{ total: number }>();
+  return row?.total ?? 0;
+}
+
+/**
+ * Bytes that should be recorded as reserved: intents still in status
+ * 'initiated' hold their reservation until completed, aborted, rejected, or
+ * expired by the sweep — including overdue ones the capped sweep has not
+ * reached yet, so no expiry filter here.
+ */
+export async function sumInitiatedIntentBytes(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare(
+      "SELECT COALESCE(SUM(expected_size), 0) AS total FROM upload_intents WHERE status = 'initiated'",
+    )
+    .first<{ total: number }>();
+  return row?.total ?? 0;
 }
 
 /**

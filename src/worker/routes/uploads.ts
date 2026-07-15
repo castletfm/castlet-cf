@@ -26,7 +26,8 @@ import { readJsonBody, validationFailed } from "./common";
  * Mounted at /api/uploads behind sessionAuth + csrfProtection.
  */
 
-function uploadDeps(c: Context<AppEnv>): UploadDeps {
+/** Shared with the dashboard and maintenance routes, which reuse the sweep. */
+export function uploadDeps(c: Context<AppEnv>): UploadDeps {
   const env = c.env;
   return {
     db: env.DB,
@@ -92,6 +93,13 @@ function uploadError(c: Context<AppEnv>, error: UploadErrorCode): Response {
       );
     case "ALREADY_COMPLETED":
       return errorResponse(c, 409, "ALREADY_COMPLETED", "This upload was already completed");
+    case "OBJECT_PURGED":
+      return errorResponse(
+        c,
+        409,
+        "OBJECT_PURGED",
+        "The uploaded object was purged before completion; initiate a new upload",
+      );
     case "OWNER_DELETED":
       return errorResponse(
         c,

@@ -11,6 +11,7 @@ import type {
 import { publishEpisode } from "../../src/worker/domain/episodes";
 import {
   completeUpload,
+  purgeStorageObject,
   sweepExpiredUploadIntents,
   type UploadDeps,
 } from "../../src/worker/domain/storage";
@@ -878,6 +879,98 @@ describe("POST /api/uploads/{id}/complete", () => {
     expect(after.active_bytes - before.active_bytes).toBe(64);
   });
 
+  it("does not attach or over-count when a concurrent purge wins the object's pending->deleted claim during completion", async () => {
+    // Purge<->complete lifecycle race, the mirror of the purge-side claim-first
+    // fix (section 15.2 / 11.5). completeUpload claims the intent 'completed',
+    // which makes a concurrent purgeStorageObject fall through to its pending
+    // else-branch and win the object's pending->deleted claim (deleting the R2
+    // bytes) BEFORE completion activates the object. Activation is a status-
+    // guarded compare-and-set (WHERE status='pending'); once purge won, it
+    // matches zero rows. Completion must HONOR that loss: it must NOT commit the
+    // reserved->active bytes and must NOT attach the owner to a deleted object.
+    // Instead it releases the reservation and reports OBJECT_PURGED. Otherwise
+    // the episode would point at a deleted object whose R2 bytes are gone and
+    // active_bytes would permanently over-count a deleted object.
+    //
+    // Reproduced deterministically by wrapping env.DB so the concurrent purge
+    // (against the real DB) runs the instant completion's completed-intent claim
+    // commits -- the window between the intent claim and activation. Hooking the
+    // claim (not the activation batch) reproduces the race for both the buggy and
+    // fixed flow: the object is deleted before activation runs either way.
+    await env.DB.prepare("DELETE FROM upload_intents WHERE status = 'completed'").run();
+
+    const before = await usage();
+    const initiated = await initiateOk(audioInitiateBody({ size: 64 }));
+    const objectId = initiated.storageObjectId;
+    const objectKey = await putObject(objectId, mp3Bytes(64), "audio/mpeg");
+
+    let purged = false;
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    // Wraps a prepared statement so the concurrent purge fires the instant the
+    // completed-intent claim's run() executes. bind() returns a fresh statement,
+    // so re-wrap it to keep the hook on the eventual run().
+    const wrapClaim = (stmt: D1PreparedStatement): D1PreparedStatement =>
+      new Proxy(stmt, {
+        get(target, prop, receiver) {
+          if (prop === "bind") {
+            return (...args: unknown[]) =>
+              wrapClaim((target.bind as (...a: unknown[]) => D1PreparedStatement)(...args));
+          }
+          if (prop === "run") {
+            return async () => {
+              const result = await (target.run as () => Promise<D1Result>)();
+              if (!purged) {
+                purged = true;
+                // Concurrent purge: intent is now 'completed', so purge takes the
+                // pending else-branch and wins pending->deleted, deleting R2.
+                await purgeStorageObject({ db: env.DB, media: env.MEDIA }, objectId);
+              }
+              return result;
+            };
+          }
+          const value = Reflect.get(target, prop, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }) as D1PreparedStatement;
+
+    const racingDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "prepare") {
+          return (sql: string) => {
+            const stmt = realPrepare(sql);
+            return sql.includes("SET status = 'completed'") ? wrapClaim(stmt) : stmt;
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as D1Database;
+
+    const deps: UploadDeps = { ...testDeps(), db: racingDb };
+    const result = await completeUpload(deps, initiated.uploadId, {});
+
+    // The purge won the object; completion must report the conflict and NOT
+    // return a live/attached object.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("OBJECT_PURGED");
+    }
+    expect(purged).toBe(true);
+
+    // The object stays deleted; it was never re-activated.
+    expect((await objectRow(objectId)).status).toBe("deleted");
+    // The owner is NOT attached to the deleted object.
+    expect((await getEpisodeRow(episode.id)).audio_object_id).toBeNull();
+    // R2 was not resurrected: the purge's delete stands.
+    expect(await env.MEDIA.head(objectKey)).toBeNull();
+
+    // Accounting: the reservation is released (reserved back to baseline) and
+    // active_bytes never counts the deleted object (net zero change).
+    const after = await usage();
+    expect(after.reserved_bytes).toBe(before.reserved_bytes);
+    expect(after.active_bytes).toBe(before.active_bytes);
+  });
+
   it("marks the feed dirty when a concurrent publish makes the episode feed-visible before a replacement attach lands", async () => {
     // Silent feed-corruption race (section 9.1, same class the per-show feed-sync
     // lock defends). A replacement audio upload completes while the episode is
@@ -1055,8 +1148,10 @@ describe("expiration sweep", () => {
       .bind(PAST_ISO, initiated.uploadId)
       .run();
 
-    const expired = await sweepExpiredUploadIntents(testDeps());
-    expect(expired).toBeGreaterThanOrEqual(1);
+    const report = await sweepExpiredUploadIntents(testDeps());
+    expect(report.expiredIntents).toBeGreaterThanOrEqual(1);
+    expect(report.releasedBytes).toBeGreaterThanOrEqual(64);
+    expect(report.deletedObjects).toBeGreaterThanOrEqual(1);
 
     expect((await intentRow(initiated.uploadId)).status).toBe("expired");
     expect((await objectRow(initiated.storageObjectId)).status).toBe("deleted");

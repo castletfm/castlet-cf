@@ -6,11 +6,15 @@ import { sessionAuth } from "./middleware/auth";
 import { csrfProtection } from "./middleware/csrf";
 import { notFound, onError } from "./middleware/errors";
 import { requestId } from "./middleware/request-id";
+import { analyticsRoutes } from "./routes/analytics";
 import { authRoutes } from "./routes/auth";
+import { dashboardRoutes } from "./routes/dashboard";
 import { episodeRoutes, showEpisodeRoutes } from "./routes/episodes";
 import { feedRoutes } from "./routes/feeds";
+import { maintenanceRoutes } from "./routes/maintenance";
 import { artworkRoutes, mediaRoutes } from "./routes/media";
 import { showRoutes } from "./routes/shows";
+import { storageRoutes } from "./routes/storage";
 import { uploadRoutes } from "./routes/uploads";
 
 const app = new Hono<AppEnv>();
@@ -40,8 +44,10 @@ app.route("/api/shows", showRoutes);
 app.route("/api/shows", showEpisodeRoutes);
 app.route("/api/episodes", episodeRoutes);
 app.route("/api/uploads", uploadRoutes);
-
-// Later phases add analytics-query and maintenance routes here.
+app.route("/api/dashboard", dashboardRoutes);
+app.route("/api/analytics", analyticsRoutes);
+app.route("/api/storage", storageRoutes);
+app.route("/api/maintenance", maintenanceRoutes);
 
 app.notFound(notFound);
 app.onError(onError);

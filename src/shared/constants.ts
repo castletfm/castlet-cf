@@ -35,3 +35,16 @@ export const FEED_CACHE_MAX_AGE_SECONDS = 300;
 
 /** Cache-Control max-age for immutable public media, in seconds (section 14.2). */
 export const MEDIA_CACHE_MAX_AGE_SECONDS = 31_536_000;
+
+/** Recent episodes shown on the dashboard (section 15.2, GET /api/dashboard). */
+export const DASHBOARD_RECENT_EPISODES_LIMIT = 10;
+
+/** Per-run cap on expired intents handled by POST /api/maintenance/run (section 11.6). */
+export const MAINTENANCE_SWEEP_LIMIT = 200;
+
+/**
+ * Analytics Engine data retention, used to clamp analytics query windows.
+ * Cloudflare retains Analytics Engine data points for about three months;
+ * querying beyond that returns nothing, so 90 days is the usable window.
+ */
+export const ANALYTICS_RETENTION_DAYS = 90;
