@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.tmp/
+.worktrees/
+coverage/
+playwright-report/
+test-results/
+*.log
