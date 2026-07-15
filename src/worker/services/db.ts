@@ -696,6 +696,21 @@ export async function getStorageObjectById(
     .first<StorageObjectRow>();
 }
 
+/**
+ * ACTIVE storage object for a public path (mvp-design.md section 14.1).
+ * public_path is UNIQUE, so this is an indexed point lookup; only active
+ * objects are publicly servable (pending/orphaned/deleted/rejected are not).
+ */
+export async function getActiveStorageObjectByPublicPath(
+  db: D1Database,
+  publicPath: string,
+): Promise<StorageObjectRow | null> {
+  return db
+    .prepare("SELECT * FROM storage_objects WHERE public_path = ? AND status = 'active'")
+    .bind(publicPath)
+    .first<StorageObjectRow>();
+}
+
 export async function getUploadIntentById(
   db: D1Database,
   id: string,
