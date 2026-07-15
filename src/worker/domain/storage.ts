@@ -516,7 +516,15 @@ export async function completeUpload(
     return { ok: false, error: "OBJECT_PURGED" };
   }
 
-  // Move the declared reservation to active storage using verified bytes.
+  // Move the declared reservation to active storage using verified bytes. The
+  // boolean result is intentionally not acted on: if a concurrent maintenance
+  // reconcile already released this (now-completed) intent's reservation, the
+  // guarded UPDATE changes zero rows and active_bytes transiently under-counts
+  // this active object. That drift is bounded (one object) and self-heals — the
+  // maintenance endpoint recomputes active_bytes AUTHORITATIVELY as the sum of
+  // active/orphaned objects' byte_length (section 11.6), so the next run counts
+  // this object and reconciles the counter up to truth. account_usage counters
+  // are drift-prone by design and maintenance is the reconciler (see quota.ts).
   await commitReservedBytes(db, intent.expected_size, head.size);
 
   // Swap the now-active object onto its owner with a compare-and-set, so two
