@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { MAX_OUTSTANDING_UPLOAD_INTENTS } from "../../src/shared/constants";
 import type {
   EpisodeResource,
   ShowResource,
@@ -747,6 +748,74 @@ describe("POST /api/uploads/{id}/complete", () => {
     const after = await usage();
     expect(after.reserved_bytes).toBe(before.reserved_bytes);
     expect(after.active_bytes - before.active_bytes).toBe(64 + 80);
+  });
+
+  it("attaches every in-cap concurrent completion for one episode without spurious ATTACH_CONFLICT", async () => {
+    // The outstanding-upload cap admits up to MAX_OUTSTANDING_UPLOAD_INTENTS
+    // in-flight uploads for one episode. If that many complete at once, the
+    // compare-and-set attach has exactly one winner per round, so the last
+    // legitimate completion needs an attempt count equal to the number of
+    // contenders. When the attach-retry cap was a fixed 16 -- below the
+    // outstanding cap of 20 -- the 17th..20th legitimate completion exhausted
+    // the loop and was spuriously orphaned with ATTACH_CONFLICT even though it
+    // was within the allowed cap. The bound must be at least the outstanding
+    // cap so only a genuine anomaly (more contention than the caps permit) ever
+    // surfaces ATTACH_CONFLICT.
+    //
+    // Driven through the domain function directly (not the HTTP route) for the
+    // same reason as the two-completion test above: the workers test pool
+    // serializes back-to-back SELF.fetch handlers, hiding the race, whereas
+    // concurrent completeUpload calls interleave at their D1/R2 awaits so all
+    // contenders capture the same pre-attach owner state.
+    const contenders = MAX_OUTSTANDING_UPLOAD_INTENTS; // worst-case in-cap contention
+    const before = await usage();
+    // Clear completed intents so these completions stay within the daily cap.
+    await env.DB.prepare("DELETE FROM upload_intents WHERE status = 'completed'").run();
+
+    const initiated: UploadInitiateResponse[] = [];
+    for (let i = 0; i < contenders; i += 1) {
+      const one = await initiateOk(audioInitiateBody({ size: 64 }));
+      await putObject(one.storageObjectId, mp3Bytes(64), "audio/mpeg");
+      initiated.push(one);
+    }
+
+    const deps = testDeps();
+    try {
+      const results = await Promise.all(
+        initiated.map((one) => completeUpload(deps, one.uploadId, {})),
+      );
+
+      // Every legitimate, in-cap completion succeeded -- none was dropped.
+      for (const result of results) {
+        expect(result.ok).toBe(true);
+      }
+
+      // Exactly one object ends attached+active; the other contenders are orphaned.
+      const attachedId = (await getEpisodeRow(episode.id)).audio_object_id ?? "";
+      const objectIds = initiated.map((one) => one.storageObjectId);
+      expect(objectIds).toContain(attachedId);
+      expect((await objectRow(attachedId)).status).toBe("active");
+
+      let orphanedCount = 0;
+      for (const objectId of objectIds) {
+        if (objectId === attachedId) {
+          continue;
+        }
+        expect((await objectRow(objectId)).status).toBe("orphaned");
+        orphanedCount += 1;
+      }
+      expect(orphanedCount).toBe(contenders - 1);
+
+      // Accounting: every contender's bytes count as active (winner active, the
+      // rest orphaned-but-still-active until purge); reservations fully committed.
+      const after = await usage();
+      expect(after.reserved_bytes).toBe(before.reserved_bytes);
+      expect(after.active_bytes - before.active_bytes).toBe(64 * contenders);
+    } finally {
+      // These completions fill the day's completed-upload cap; clear them so
+      // later tests in the shared DB start from a clean daily count.
+      await env.DB.prepare("DELETE FROM upload_intents WHERE status = 'completed'").run();
+    }
   });
 
   it("does not spin forever when the owner is deleted mid-attach; orphans the object and reports OWNER_DELETED", async () => {

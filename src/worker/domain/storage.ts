@@ -1,5 +1,6 @@
 import type { z } from "zod";
 
+import { MAX_OUTSTANDING_UPLOAD_INTENTS } from "../../shared/constants";
 import type {
   EpisodeStatus,
   StorageObjectResource,
@@ -119,11 +120,16 @@ const FEED_AFFECTING_EPISODE_STATUSES: ReadonlySet<EpisodeStatus> = new Set([
 ]);
 
 /**
- * Upper bound on compare-and-set attach retries during completion. Real
- * contention converges in one or two iterations; this cap only guards against
- * a pathological non-converging loop (see `completeUpload`).
+ * Upper bound on compare-and-set attach retries during completion. The
+ * outstanding-upload cap admits that many in-flight uploads for one owner, and
+ * the compare-and-set has exactly one winner per round, so the last legitimate
+ * completion can need as many attempts as there are contenders. The bound is
+ * therefore derived from the outstanding-upload cap (plus one for margin) so
+ * every in-cap completion can still attach; the two stay in sync if the cap
+ * changes. Exhausting it means more contention than the caps permit -- a
+ * genuine anomaly, not normal in-cap contention (see `completeUpload`).
  */
-const MAX_ATTACH_ATTEMPTS = 16;
+const MAX_ATTACH_ATTEMPTS = MAX_OUTSTANDING_UPLOAD_INTENTS + 1;
 
 /** Owner state observed while retrying the completion attach. */
 type OwnerAttachment = { exists: false } | { exists: true; attachment: string | null };
@@ -479,11 +485,13 @@ export async function completeUpload(
   //     against the now-current attachment, orphaning whatever we displace.
   // Because the orphan guard is `status = 'active'`, orphaning a value we lost
   // the race for is an idempotent no-op rather than a double-orphan. The retry
-  // count is bounded: real contention converges in one or two iterations, so a
-  // persistent lost attach with the owner still present is an anomaly, not
-  // normal contention -- after the cap we orphan the object and report
-  // ATTACH_CONFLICT rather than spin. The end state after any interleaving:
-  // exactly one object attached+active, every other completed object orphaned.
+  // count is bounded by MAX_ATTACH_ATTEMPTS, which is at least the
+  // outstanding-upload cap, so every in-cap completion can still attach; a lost
+  // attach that persists past that bound with the owner still present means more
+  // contention than the caps permit -- a genuine anomaly, not normal in-cap
+  // contention. After the cap we orphan the object and report ATTACH_CONFLICT
+  // rather than spin. The end state after any interleaving: exactly one object
+  // attached+active, every other completed object orphaned.
   const activate = activateStorageObjectStatement(db, object.id, head.size, head.etag, nowIso);
   let displaced = previousObjectId;
   let activatePending = true;
