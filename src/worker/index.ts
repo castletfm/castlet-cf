@@ -9,6 +9,7 @@ import { requestId } from "./middleware/request-id";
 import { analyticsRoutes } from "./routes/analytics";
 import { authRoutes } from "./routes/auth";
 import { dashboardRoutes } from "./routes/dashboard";
+import { e2eShimRoutes } from "./routes/e2e-shim";
 import { episodeRoutes, showEpisodeRoutes } from "./routes/episodes";
 import { feedRoutes } from "./routes/feeds";
 import { maintenanceRoutes } from "./routes/maintenance";
@@ -27,6 +28,10 @@ app.use("*", requestId());
 app.route("/feeds", feedRoutes);
 app.route("/artwork", artworkRoutes);
 app.route("/media", mediaRoutes);
+
+// Development/test-only upload shim. Inert unless E2E_UPLOAD_SHIM === "1"
+// (absent in every real deployment); see routes/e2e-shim.ts.
+app.route("/__e2e", e2eShimRoutes);
 
 // Every /api/* route is protected by default: sessionAuth() rejects requests
 // without a valid session cookie (401) except for the public paths listed in

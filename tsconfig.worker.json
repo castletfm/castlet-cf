@@ -4,5 +4,6 @@
     "lib": ["ES2022"],
     "types": ["@cloudflare/workers-types/experimental", "@cloudflare/vitest-pool-workers/types"]
   },
-  "include": ["src/worker/**/*.ts", "src/shared/**/*.ts", "test/**/*.ts"]
+  "include": ["src/worker/**/*.ts", "src/shared/**/*.ts", "test/**/*.ts"],
+  "exclude": ["test/e2e/**"]
 }

@@ -5,12 +5,21 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist/", "node_modules/", ".wrangler/", ".tmp/", "coverage/", "pnpm-lock.yaml"],
+    ignores: [
+      "dist/",
+      "node_modules/",
+      ".wrangler/",
+      ".tmp/",
+      "coverage/",
+      "pnpm-lock.yaml",
+      "playwright-report/",
+      "test-results/",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["scripts/**/*.mjs", "*.config.mjs"],
+    files: ["scripts/**/*.mjs", "*.config.mjs", "test/**/*.mjs"],
     languageOptions: {
       globals: globals.node,
     },
