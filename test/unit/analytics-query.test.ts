@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type AnalyticsWindow,
   buildDeliveryTotalsSql,
+  queryEpisodeDeliveryTotals,
   resolveAnalyticsWindow,
 } from "../../src/worker/services/analytics-query";
 
@@ -66,5 +68,52 @@ describe("buildDeliveryTotalsSql", () => {
     expect(sql).toContain("timestamp >= toDateTime('2026-07-01 00:00:00')");
     expect(sql).toContain("timestamp <= toDateTime('2026-07-10 06:30:15')");
     expect(sql).toContain("GROUP BY blob1, blob2, blob8");
+  });
+});
+
+describe("queryEpisodeDeliveryTotals", () => {
+  const window: AnalyticsWindow = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-10T00:00:00.000Z"),
+  };
+  const withData = (data: unknown) => ({
+    accountId: "acc",
+    apiToken: "tok",
+    fetchImpl: (async () =>
+      new Response(JSON.stringify({ data }), { status: 200 })) as unknown as typeof fetch,
+  });
+
+  it("folds valid rows into per-episode totals", async () => {
+    const result = await queryEpisodeDeliveryTotals(
+      withData([
+        { showId: "s1", episodeId: "e1", ranged: "0", requests: 3, bytes: 100 },
+        { showId: "s1", episodeId: "e1", ranged: "1", requests: 2, bytes: 50 },
+      ]),
+      window,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.episodes).toEqual([
+        { showId: "s1", episodeId: "e1", requests: 5, bytes: 150, rangedRequests: 2 },
+      ]);
+    }
+  });
+
+  it("fails closed (never throws) on a null row from the provider", async () => {
+    const result = await queryEpisodeDeliveryTotals(withData([null]), window);
+    expect(result.ok).toBe(false);
+  });
+
+  it("fails closed on a row missing required fields", async () => {
+    const result = await queryEpisodeDeliveryTotals(withData([{ showId: "s1" }]), window);
+    expect(result.ok).toBe(false);
+  });
+
+  it("fails closed on a row whose aggregate is non-numeric", async () => {
+    const result = await queryEpisodeDeliveryTotals(
+      withData([{ showId: "s1", episodeId: "e1", ranged: "0", requests: "nope", bytes: 100 }]),
+      window,
+    );
+    expect(result.ok).toBe(false);
   });
 });
