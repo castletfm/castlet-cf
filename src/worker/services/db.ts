@@ -37,6 +37,11 @@ export interface ShowRow {
   feed_published_revision: number;
   feed_last_generated_at: string | null;
   feed_error: string | null;
+  // Internal per-show feed-sync advisory lock (migration 0002); never mapped
+  // into an API resource. Held when the holder is non-null; the ISO expiry
+  // recovers a crashed holder. See acquireFeedSyncLock / releaseFeedSyncLock.
+  feed_sync_lock_holder: string | null;
+  feed_sync_lock_expires_at: string | null;
   slug_locked_at: string | null;
   version: number;
   created_at: string;
@@ -267,11 +272,13 @@ export function lockShowSlugStatement(
  * the guard did not match (a newer feed_revision exists), meaning a newer sync
  * is responsible for the mark.
  *
- * Scope: this closes the stale-mark case only. It does NOT serialize the two
- * R2 PUTs, so a physically-reordered pair of writes to feeds/{slug}.xml can
- * still leave R2 holding the older revision's XML. Full per-show serialization
- * (e.g. a Durable Object gating build+PUT+mark) is deferred; the baseline
- * reserves that coordination machinery for later (section 2).
+ * Scope: this is the revision guard on the mark itself. The practical race —
+ * two overlapping live syncs reordering their R2 PUTs — is now closed upstream
+ * by the per-show advisory lock (see acquireFeedSyncLock), which serializes
+ * build+PUT+mark so the PUTs cannot reorder. This compare-and-set is kept as
+ * defense in depth. The only residual is the narrow lock-expiry window: if a
+ * holder stalls past its lease and a second sync acquires the lock, the two
+ * can still overlap — a documented, bounded risk, not the everyday case.
  */
 export async function markShowFeedSynchronized(
   db: D1Database,
@@ -289,6 +296,55 @@ export async function markShowFeedSynchronized(
     .bind(revision, generatedAt, generatedAt, showId, revision)
     .run();
   return result.meta.changes > 0;
+}
+
+/**
+ * Acquires the per-show feed-sync advisory lock (migration 0002) with an atomic
+ * compare-and-set. D1 is single-writer SQLite, so this UPDATE either claims the
+ * lock — the row was free (holder NULL) or the previous holder's lease had
+ * expired (expiry < now) — or changes zero rows because a live holder still
+ * owns it. `expiresAt` bounds how long a crashed holder can block others.
+ * Returns true when this caller now holds the lock. Serializing build+PUT+mark
+ * behind this lock is what stops two same-show syncs from reordering their R2
+ * PUTs (section 12.3).
+ */
+export async function acquireFeedSyncLock(
+  db: D1Database,
+  showId: string,
+  nonce: string,
+  nowIso: string,
+  expiresAt: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE shows
+         SET feed_sync_lock_holder = ?, feed_sync_lock_expires_at = ?
+       WHERE id = ?
+         AND (feed_sync_lock_holder IS NULL OR feed_sync_lock_expires_at < ?)`,
+    )
+    .bind(nonce, expiresAt, showId, nowIso)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Releases the per-show feed-sync advisory lock. The holder guard makes this a
+ * no-op unless this caller still owns the lock, so a caller whose lease already
+ * expired (and was reclaimed by another sync) never clears the new holder.
+ */
+export async function releaseFeedSyncLock(
+  db: D1Database,
+  showId: string,
+  nonce: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE shows
+         SET feed_sync_lock_holder = NULL, feed_sync_lock_expires_at = NULL
+       WHERE id = ? AND feed_sync_lock_holder = ?`,
+    )
+    .bind(showId, nonce)
+    .run();
 }
 
 /** Stores a concise feed synchronization error (section 12.3). */

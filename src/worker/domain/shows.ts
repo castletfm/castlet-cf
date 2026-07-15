@@ -78,6 +78,8 @@ export async function createShow(db: D1Database, input: ShowCreateInput): Promis
     feed_published_revision: 0,
     feed_last_generated_at: null,
     feed_error: null,
+    feed_sync_lock_holder: null,
+    feed_sync_lock_expires_at: null,
     slug_locked_at: null,
     version: 1,
     created_at: now,

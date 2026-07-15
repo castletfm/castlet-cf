@@ -2,6 +2,7 @@ import { SELF, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { EpisodeResource, ShowResource } from "../../src/shared/contracts";
+import { synchronizeFeed } from "../../src/worker/services/feed-sync";
 import {
   BASE,
   createAuthContext,
@@ -504,5 +505,76 @@ describe("feed write failure and regenerate-feed", () => {
   it("returns 404 for an unknown show", async () => {
     const res = await regenerateFeed(crypto.randomUUID());
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Concurrent same-show feed sync (per-show advisory lock)
+// ---------------------------------------------------------------------------
+
+describe("concurrent same-show feed sync", () => {
+  it("serializes overlapping syncs so R2 ends at the newest revision and D1 matches", async () => {
+    await makePublishable(episode.id);
+    expect((await publish(episode.id)).status).toBe(200);
+
+    const deps = {
+      db: env.DB,
+      media: env.MEDIA,
+      publicBaseUrl: env.PUBLIC_BASE_URL as string,
+    };
+
+    // Two feed-affecting edits queued back to back: an older revision carrying
+    // "Concurrent Title A" and a newer one carrying "Concurrent Title B".
+    await env.DB.prepare(
+      "UPDATE shows SET title = 'Concurrent Title A', feed_revision = feed_revision + 1 WHERE id = ?",
+    )
+      .bind(show.id)
+      .run();
+    const syncOlder = synchronizeFeed(deps, show.id);
+
+    await env.DB.prepare(
+      "UPDATE shows SET title = 'Concurrent Title B', feed_revision = feed_revision + 1 WHERE id = ?",
+    )
+      .bind(show.id)
+      .run();
+    const syncNewer = synchronizeFeed(deps, show.id);
+
+    // Delay the FIRST R2 PUT so that, without serialization, the older sync's
+    // write would land LAST and overwrite feeds/{slug}.xml with stale XML while
+    // D1 still reported synchronized. The lock must prevent that reordering.
+    const originalPut = env.MEDIA.put.bind(env.MEDIA);
+    let putCount = 0;
+    (env.MEDIA as { put: unknown }).put = (...args: unknown[]): Promise<unknown> => {
+      putCount += 1;
+      const delayMs = putCount === 1 ? 80 : 0;
+      return new Promise((resolve, reject) => {
+        setTimeout(() => {
+          (originalPut as (...a: unknown[]) => Promise<unknown>)(...args).then(resolve, reject);
+        }, delayMs);
+      });
+    };
+
+    let older: Awaited<typeof syncOlder>;
+    let newer: Awaited<typeof syncNewer>;
+    try {
+      [older, newer] = await Promise.all([syncOlder, syncNewer]);
+    } finally {
+      (env.MEDIA as { put: unknown }).put = originalPut;
+    }
+
+    // Both syncs succeed (neither is skipped-and-lied-to).
+    expect(older.ok).toBe(true);
+    expect(newer.ok).toBe(true);
+
+    // R2 holds the newest content, never the older revision's stale XML: because
+    // each sync re-reads under the lock, both build the current (newest) feed.
+    const feed = await readFeed(show.slug);
+    expect(feed?.text).toContain("<title>Concurrent Title B</title>");
+    expect(feed?.text).not.toContain("<title>Concurrent Title A</title>");
+
+    // D1 reports synchronized AND matches R2 (no stale-under-synchronized).
+    const state = await showFeedState(show.id);
+    expect(state.feed_published_revision).toBe(state.feed_revision);
+    expect(state.feed_error).toBeNull();
   });
 });
