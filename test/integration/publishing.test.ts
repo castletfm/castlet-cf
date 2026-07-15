@@ -563,9 +563,12 @@ describe("concurrent same-show feed sync", () => {
       (env.MEDIA as { put: unknown }).put = originalPut;
     }
 
-    // Both syncs succeed (neither is skipped-and-lied-to).
+    // Both syncs succeed (neither is skipped-and-lied-to), and each reports its
+    // mark as applied (serialized, so neither is superseded).
     expect(older.ok).toBe(true);
     expect(newer.ok).toBe(true);
+    expect(older.ok && older.synchronized).toBe(true);
+    expect(newer.ok && newer.synchronized).toBe(true);
 
     // R2 holds the newest content, never the older revision's stale XML: because
     // each sync re-reads under the lock, both build the current (newest) feed.
@@ -577,6 +580,55 @@ describe("concurrent same-show feed sync", () => {
     const state = await showFeedState(show.id);
     expect(state.feed_published_revision).toBe(state.feed_revision);
     expect(state.feed_error).toBeNull();
+  });
+
+  it("warns and leaves the feed dirty when a concurrent bump supersedes it before the mark", async () => {
+    await makePublishable(episode.id);
+    expect((await publish(episode.id)).status).toBe(200);
+
+    const deps = {
+      db: env.DB,
+      media: env.MEDIA,
+      publicBaseUrl: env.PUBLIC_BASE_URL as string,
+    };
+
+    // A feed-affecting edit to sync.
+    await env.DB.prepare(
+      "UPDATE shows SET title = 'Superseded', feed_revision = feed_revision + 1 WHERE id = ?",
+    )
+      .bind(show.id)
+      .run();
+
+    // Bump feed_revision again DURING this sync's R2 write — after it captured
+    // builtRevision under the lock but before the compare-and-set mark — so the
+    // mark's guard (feed_revision = builtRevision) matches zero rows, exactly as
+    // a concurrent feed-affecting PATCH landing mid-sync would.
+    const originalPut = env.MEDIA.put.bind(env.MEDIA);
+    let bumped = false;
+    (env.MEDIA as { put: unknown }).put = async (...args: unknown[]): Promise<unknown> => {
+      if (!bumped) {
+        bumped = true;
+        await env.DB.prepare("UPDATE shows SET feed_revision = feed_revision + 1 WHERE id = ?")
+          .bind(show.id)
+          .run();
+      }
+      return (originalPut as (...a: unknown[]) => Promise<unknown>)(...args);
+    };
+
+    let result: Awaited<ReturnType<typeof synchronizeFeed>>;
+    try {
+      result = await synchronizeFeed(deps, show.id);
+    } finally {
+      (env.MEDIA as { put: unknown }).put = originalPut;
+    }
+
+    // The R2 write landed, so the sync does not fail the publish, but it reports
+    // the mark as superseded instead of silently swallowing it.
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.synchronized).toBe(false);
+    // The feed is left dirty for the next publish/regenerate to re-sync.
+    const state = await showFeedState(show.id);
+    expect(state.feed_published_revision).toBeLessThan(state.feed_revision);
   });
 });
 
