@@ -1,58 +1,70 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-interface HealthResponse {
-  status: string;
-  version: string;
-}
+import { ApiError, getSession, logout, type SessionInfo } from "./api";
+import { Login } from "./login";
 
-type HealthState =
-  | { phase: "loading" }
-  | { phase: "ok"; health: HealthResponse }
-  | { phase: "error"; message: string };
+type AuthState =
+  { phase: "checking" } | { phase: "loggedOut" } | { phase: "loggedIn"; session: SessionInfo };
 
 /**
- * Placeholder dashboard shell. Real screens (login, shows, episodes,
+ * Minimal authentication shell. Real dashboard screens (shows, episodes,
  * uploads, analytics) arrive in later phases.
  */
 export function App() {
-  const [state, setState] = useState<HealthState>({ phase: "loading" });
+  const [state, setState] = useState<AuthState>({ phase: "checking" });
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const refreshSession = useCallback(() => {
+    setState({ phase: "checking" });
+    getSession()
+      .then((session) => setState({ phase: "loggedIn", session }))
+      .catch((err: unknown) => {
+        // 401 means "not logged in"; anything else is shown as a notice.
+        if (!(err instanceof ApiError && err.status === 401)) {
+          setNotice(err instanceof Error ? err.message : "Session check failed.");
+        }
+        setState({ phase: "loggedOut" });
+      });
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    fetch("/api/health")
-      .then(async (res) => {
-        if (!res.ok) {
-          throw new Error(`unexpected status ${res.status}`);
-        }
-        return (await res.json()) as HealthResponse;
-      })
-      .then((health) => {
-        if (!cancelled) setState({ phase: "ok", health });
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setState({
-            phase: "error",
-            message: err instanceof Error ? err.message : "request failed",
-          });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    refreshSession();
+  }, [refreshSession]);
+
+  async function handleLogout() {
+    setNotice(null);
+    try {
+      await logout();
+    } catch (err: unknown) {
+      setNotice(err instanceof Error ? err.message : "Logout failed.");
+    }
+    // Even on failure, re-check: an expired session also lands on login.
+    refreshSession();
+  }
 
   return (
     <main style={{ fontFamily: "system-ui, sans-serif", margin: "2rem" }}>
       <h1>Castlet</h1>
-      <p>Serverless podcast hosting (scaffold).</p>
-      {state.phase === "loading" && <p>Checking API health…</p>}
-      {state.phase === "ok" && (
-        <p>
-          API status: <strong>{state.health.status}</strong> (version {state.health.version})
-        </p>
+      <p>Serverless podcast hosting.</p>
+      {notice !== null && <p role="alert">{notice}</p>}
+      {state.phase === "checking" && <p>Checking session…</p>}
+      {state.phase === "loggedOut" && (
+        <Login
+          onLoggedIn={() => {
+            setNotice(null);
+            refreshSession();
+          }}
+        />
       )}
-      {state.phase === "error" && <p>API unreachable: {state.message}</p>}
+      {state.phase === "loggedIn" && (
+        <section>
+          <p>Logged in. Session expires {new Date(state.session.expiresAt).toLocaleString()}.</p>
+          <p>Dashboard screens arrive in later phases.</p>
+          <button type="button" onClick={() => void handleLogout()}>
+            Log out
+          </button>
+        </section>
+      )}
     </main>
   );
 }

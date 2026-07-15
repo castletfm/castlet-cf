@@ -5,9 +5,9 @@ import type { Env as WorkerEnv } from "../src/worker/env";
 declare global {
   namespace Cloudflare {
     // Bindings available via `import { env } from "cloudflare:test"`.
-    // Keep in sync with the miniflare options in vitest.config.ts. Secrets
-    // and the analytics dataset are not bound in tests yet; later phases add
-    // them when routes start using them.
+    // Keep in sync with the miniflare options in vitest.config.ts. The
+    // analytics dataset and R2 signing secrets are not bound in tests yet;
+    // later phases add them when routes start using them.
     interface Env extends Pick<
       WorkerEnv,
       | "DB"
@@ -21,6 +21,9 @@ declare global {
       | "UPLOAD_URL_TTL_SECONDS"
       | "SESSION_TTL_SECONDS"
       | "TURNSTILE_SITE_KEY"
+      | "ADMIN_ACCESS_KEY_SHA256"
+      | "SESSION_SIGNING_KEY"
+      | "TURNSTILE_SECRET_KEY"
     > {
       TEST_MIGRATIONS: D1Migration[];
     }

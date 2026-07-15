@@ -2,8 +2,7 @@ import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
-import type { Env } from "../env";
-import type { RequestIdVariables } from "./request-id";
+import type { AppEnv } from "../app-env";
 
 /**
  * Error envelope shared by all API error responses.
@@ -19,7 +18,7 @@ export interface ErrorEnvelope {
   };
 }
 
-type ErrorContext = Context<{ Bindings: Env; Variables: RequestIdVariables }>;
+type ErrorContext = Context<AppEnv>;
 
 export function errorResponse(
   c: ErrorContext,

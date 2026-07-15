@@ -12,8 +12,11 @@ it("GET /api/health returns 200 with status and version", async () => {
   expect(body).toEqual({ status: "ok", version: expect.any(String) });
 });
 
-it("unknown API routes return the standard error envelope", async () => {
-  const res = await SELF.fetch("http://example.com/api/does-not-exist");
+// Unknown /api/* routes now return 401 before routing (see auth tests);
+// non-API paths (served by assets in production, absent in tests) still get
+// the standard 404 envelope from the worker's notFound handler.
+it("unknown non-API routes return the standard error envelope", async () => {
+  const res = await SELF.fetch("http://example.com/does-not-exist");
 
   expect(res.status).toBe(404);
   const body = (await res.json()) as {

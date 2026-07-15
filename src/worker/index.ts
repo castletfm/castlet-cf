@@ -1,18 +1,31 @@
 import { Hono } from "hono";
 
 import { APP_VERSION } from "../shared/constants";
-import type { Env } from "./env";
+import type { AppEnv } from "./app-env";
+import { sessionAuth } from "./middleware/auth";
+import { csrfProtection } from "./middleware/csrf";
 import { notFound, onError } from "./middleware/errors";
-import { requestId, type RequestIdVariables } from "./middleware/request-id";
+import { requestId } from "./middleware/request-id";
+import { authRoutes } from "./routes/auth";
 
-const app = new Hono<{ Bindings: Env; Variables: RequestIdVariables }>();
+const app = new Hono<AppEnv>();
 
 app.use("*", requestId());
+
+// Every /api/* route is protected by default: sessionAuth() rejects requests
+// without a valid session cookie (401) except for the public paths listed in
+// PUBLIC_API_PATHS, and csrfProtection() enforces origin/content-type/CSRF
+// checks on authenticated state-changing requests (403). Register these
+// before any /api route so future routes inherit the protection.
+app.use("/api/*", sessionAuth());
+app.use("/api/*", csrfProtection());
 
 // Liveness only. No dependency checks and no sensitive detail (section 15.2).
 app.get("/api/health", (c) => c.json({ status: "ok", version: APP_VERSION }));
 
-// Later phases add /api/auth, /api/shows, /api/episodes, /api/uploads,
+app.route("/api/auth", authRoutes);
+
+// Later phases add /api/shows, /api/episodes, /api/uploads,
 // /feeds/*, /media/*, /artwork/*, analytics, and maintenance routes here.
 
 app.notFound(notFound);

@@ -9,20 +9,31 @@ The full specification lives in [`mvp-design.md`](./mvp-design.md).
 
 ## Status
 
-This is the Phase 0 scaffold (bootstrap and infrastructure). It contains:
+Phases 0 (bootstrap and infrastructure) and 1 (authentication shell) are
+implemented. The repo contains:
 
 - the Worker skeleton with `GET /api/health`, request-ID and error-envelope
   middleware;
-- the React/Vite admin SPA shell (a placeholder page that shows API health);
+- operator authentication: Turnstile Siteverify validation, constant-time
+  access-key verification, HMAC-SHA256 signed session cookies
+  (`castlet_session`, HttpOnly) with a paired CSRF cookie (`castlet_csrf`),
+  and `POST /api/auth/login`, `POST /api/auth/logout`,
+  `GET /api/auth/session`;
+- default-deny API protection: every `/api/*` route except `/api/health` and
+  `/api/auth/login` requires a valid session (401 otherwise), and
+  state-changing requests also require exact-origin, JSON content-type, and
+  double-submit CSRF checks (403 otherwise);
+- the React/Vite admin SPA shell with a minimal login form (access key +
+  Turnstile widget) and a logged-in view with logout;
 - the initial D1 migration with the complete data model;
 - shared numeric limits (storage quota, file-size caps, TTLs, feed cap);
 - Vitest 4 with the Cloudflare Workers pool, including D1/R2 test bindings and
   automatic migration application in tests;
 - ESLint, Prettier, and strict TypeScript for worker, web, and shared code.
 
-Later phases add authentication, show/episode CRUD, direct-to-R2 uploads, RSS
-generation, public media delivery, analytics, and the real dashboard screens.
-None of those are implemented yet.
+Later phases add show/episode CRUD, direct-to-R2 uploads, RSS generation,
+public media delivery, analytics, and the real dashboard screens. None of
+those are implemented yet.
 
 ## Stack
 
@@ -114,5 +125,11 @@ bucket on R2 Standard storage and keep the `r2.dev` public URL disabled.
   pointing the workers pool at `wrangler.jsonc`) so `pnpm test` does not
   require a prior `pnpm build` to produce the `dist/` assets directory. Keep
   the two files in sync when bindings change.
+- **Public `GET /api/auth/config` endpoint** (not in the design doc's section
+  15 endpoint list): returns `{ "turnstileSiteKey": ... }` from the
+  `TURNSTILE_SITE_KEY` wrangler var so the SPA gets the site key at runtime.
+  The site key is public by nature, so exposing it without a session leaks
+  nothing, and the deployed var stays the single source of truth — no
+  build-time env var or per-environment rebuild is needed.
 - **TypeScript is pinned to 5.x** (not the new 7.x line) because
   `typescript-eslint` currently supports `>=4.8.4 <6.1.0`.
