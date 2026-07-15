@@ -671,6 +671,8 @@ Server behavior:
    - increment the owning show's feed revision if the change affects the feed.
 8. Return the active media metadata.
 
+The activation in step 7 is itself a status-guarded compare-and-set (it applies only while the object is still `pending`), run before the bytes move and the attach. Claiming the intent completed lets a concurrent purge fall through to its pending branch and win the object's `pending -> deleted` transition (deleting the R2 bytes) before activation runs; SQLite lets only one of the two win. If activation loses (zero rows changed), the object is already gone: do not move bytes or attach, release the reserved bytes, and return `409 OBJECT_PURGED`.
+
 The attach in step 7 is a compare-and-set retried a bounded number of times against the owner's current attachment. If the owner (show or episode) is deleted after the intent is claimed completed but before the attach lands, stop retrying: the object is already active but references nobody, so mark it orphaned (its bytes stay in `active_bytes` until purge reclaims them) and return `409 OWNER_DELETED`. If the compare-and-set keeps losing past the retry cap while the owner still exists, orphan the object the same way and return `409 ATTACH_CONFLICT` rather than looping.
 
 If actual size exceeds the declared size, reject and delete the object. The client must initiate a new upload with the correct size.

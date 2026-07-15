@@ -68,6 +68,53 @@ export async function releaseReservedBytes(db: D1Database, size: number): Promis
 }
 
 /**
+ * Removes purged bytes from active storage (orphan purge, section 15.2:
+ * DELETE /api/storage/{id}). Returns false when fewer than `size` bytes are
+ * recorded as active — quota drift for the maintenance endpoint to
+ * reconcile; nothing changes so the counter can never go negative.
+ */
+export async function releaseActiveBytes(db: D1Database, size: number): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE account_usage
+       SET active_bytes = active_bytes - ?1, updated_at = ?2
+       WHERE singleton_id = 1 AND active_bytes >= ?1`,
+    )
+    .bind(size, new Date().toISOString())
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Rewrites account_usage to reconciled values (section 17: maintenance quota
+ * diagnostics), guarded on the previously observed counters so a concurrent
+ * upload/purge between the drift computation and this write is never
+ * clobbered. Returns false when the guard failed (counters moved; the caller
+ * should report the drift without correcting it this run).
+ */
+export async function reconcileAccountUsage(
+  db: D1Database,
+  observed: AccountUsage,
+  corrected: AccountUsage,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE account_usage
+       SET active_bytes = ?, reserved_bytes = ?, updated_at = ?
+       WHERE singleton_id = 1 AND active_bytes = ? AND reserved_bytes = ?`,
+    )
+    .bind(
+      corrected.activeBytes,
+      corrected.reservedBytes,
+      new Date().toISOString(),
+      observed.activeBytes,
+      observed.reservedBytes,
+    )
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
  * Completes an upload: releases the declared reservation and adds the
  * verified actual byte count to active storage in one atomic statement
  * (actual size may be smaller than the declared reservation; larger uploads

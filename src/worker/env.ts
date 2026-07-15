@@ -26,4 +26,13 @@ export interface Env {
   TURNSTILE_SECRET_KEY: string;
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
+  /**
+   * API token for the Analytics Engine SQL REST API (section 8 omits this;
+   * see the README deviations note). Analytics Engine has no read binding, so
+   * GET /api/analytics/episodes queries
+   * https://api.cloudflare.com/client/v4/accounts/{R2_ACCOUNT_ID}/analytics_engine/sql
+   * with this token. Optional: when unset (tests, local dev), the analytics
+   * endpoint reports `available: false` instead of failing.
+   */
+  ANALYTICS_API_TOKEN?: string;
 }
