@@ -1,15 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import { ApiError, login } from "./api";
+import { ApiError, getConfig, login } from "./api";
 
 const TURNSTILE_SCRIPT_URL =
   "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
-
-// Site key comes from the build environment; the fallback is Cloudflare's
-// visible "always passes" Turnstile test sitekey, which pairs with the test
-// secret in .dev.vars.example for local development.
-const TURNSTILE_SITE_KEY: string =
-  (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) ?? "1x00000000000000000000AA";
 
 let turnstileScriptPromise: Promise<void> | null = null;
 
@@ -52,13 +46,21 @@ export function Login({ onLoggedIn }: LoginProps) {
 
   useEffect(() => {
     let cancelled = false;
-    loadTurnstileScript()
-      .then(() => {
+    // The site key comes from the worker (GET /api/auth/config), which reads
+    // the TURNSTILE_SITE_KEY wrangler var — the single source of truth. A
+    // missing or empty key is an explicit error state, never a silent
+    // fallback to a test key.
+    Promise.all([getConfig(), loadTurnstileScript()])
+      .then(([config]) => {
         if (cancelled || containerRef.current === null || window.turnstile === undefined) {
           return;
         }
+        if (config.turnstileSiteKey === "") {
+          setWidgetFailed(true);
+          return;
+        }
         widgetIdRef.current = window.turnstile.render(containerRef.current, {
-          sitekey: TURNSTILE_SITE_KEY,
+          sitekey: config.turnstileSiteKey,
           callback: (token) => setTurnstileToken(token),
           "expired-callback": () => setTurnstileToken(null),
           "error-callback": () => setWidgetFailed(true),

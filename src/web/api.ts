@@ -10,6 +10,10 @@
 
 export const CSRF_COOKIE_NAME = "castlet_csrf";
 
+export interface AuthConfig {
+  turnstileSiteKey: string;
+}
+
 export interface SessionInfo {
   authenticated: boolean;
   expiresAt: string;
@@ -54,6 +58,14 @@ async function toApiError(res: Response): Promise<ApiError> {
     // Keep the generic message.
   }
   return new ApiError(res.status, code, message);
+}
+
+export async function getConfig(): Promise<AuthConfig> {
+  const res = await fetch("/api/auth/config");
+  if (!res.ok) {
+    throw await toApiError(res);
+  }
+  return (await res.json()) as AuthConfig;
 }
 
 export async function getSession(): Promise<SessionInfo> {

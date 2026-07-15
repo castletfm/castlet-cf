@@ -35,6 +35,12 @@ function cookieAttributes(maxAge: number): CookieAttributes {
 
 export const authRoutes = new Hono<AppEnv>();
 
+// Public: the SPA fetches the Turnstile site key (public by nature) at
+// runtime so the deployed wrangler var is the single source of truth.
+authRoutes.get("/config", (c) => {
+  return c.json({ turnstileSiteKey: c.env.TURNSTILE_SITE_KEY });
+});
+
 // Public: protected by Turnstile + access key rather than a session.
 authRoutes.post("/login", async (c) => {
   let body: unknown;

@@ -125,5 +125,11 @@ bucket on R2 Standard storage and keep the `r2.dev` public URL disabled.
   pointing the workers pool at `wrangler.jsonc`) so `pnpm test` does not
   require a prior `pnpm build` to produce the `dist/` assets directory. Keep
   the two files in sync when bindings change.
+- **Public `GET /api/auth/config` endpoint** (not in the design doc's section
+  15 endpoint list): returns `{ "turnstileSiteKey": ... }` from the
+  `TURNSTILE_SITE_KEY` wrangler var so the SPA gets the site key at runtime.
+  The site key is public by nature, so exposing it without a session leaks
+  nothing, and the deployed var stays the single source of truth — no
+  build-time env var or per-environment rebuild is needed.
 - **TypeScript is pinned to 5.x** (not the new 7.x line) because
   `typescript-eslint` currently supports `>=4.8.4 <6.1.0`.

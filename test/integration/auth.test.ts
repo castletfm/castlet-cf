@@ -80,6 +80,16 @@ async function login(): Promise<{
   };
 }
 
+describe("auth config", () => {
+  it("returns the configured Turnstile site key without a session", async () => {
+    const res = await SELF.fetch(`${BASE}/api/auth/config`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { turnstileSiteKey: string };
+    // Matches the TURNSTILE_SITE_KEY binding in vitest.config.ts.
+    expect(body.turnstileSiteKey).toBe("test-site-key");
+  });
+});
+
 describe("login", () => {
   it("happy path sets session and CSRF cookies without echoing the key", async () => {
     const { res, sessionToken, csrfToken } = await login();

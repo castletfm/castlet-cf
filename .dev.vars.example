@@ -9,6 +9,11 @@ ADMIN_ACCESS_KEY_SHA256=00000000000000000000000000000000000000000000000000000000
 # Random key used to HMAC-sign session cookies (32+ random bytes, base64 or hex).
 SESSION_SIGNING_KEY=replace-with-random-32-byte-value
 
+# Turnstile site key served to the SPA via GET /api/auth/config; overrides the
+# REPLACE_ME placeholder in wrangler.jsonc `vars` during `wrangler dev`.
+# Cloudflare's visible "always passes" test sitekey pairs with the test secret:
+TURNSTILE_SITE_KEY=1x00000000000000000000AA
+
 # Turnstile secret key for the login widget.
 # Cloudflare's "always passes" test secret works for local development:
 TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
