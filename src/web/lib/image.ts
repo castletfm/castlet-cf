@@ -54,6 +54,22 @@ export function checkArtworkDimensions(width: number, height: number): Dimension
  * Decode an image file just far enough to read its pixel dimensions. Uses
  * `createImageBitmap` when available and falls back to an `<img>` element.
  * Browser-only; not exercised by unit tests.
+ *
+ * Untrusted-bytes safety contract (verify at the sole caller,
+ * components/uploaders.tsx `ArtworkUploader.onSelect`): the caller runs a
+ * content-type sniff and the MAX_ARTWORK_BYTES (10 MiB) size cap BEFORE calling
+ * this — see uploaders.tsx:123-131 — so the blob handed here is already
+ * bounded, and it wraps this call in try/catch (uploaders.tsx:132-143). Both
+ * decode paths REJECT on bad bytes: `createImageBitmap` rejects on a
+ * malformed/truncated/zero-byte blob, and the `<img>` fallback rejects via
+ * `onerror`. A rejection therefore surfaces as the safe "Could not read the
+ * selected image." banner, never an unhandled crash or hang — so accidental
+ * corrupt/truncated input fails safe, which is the threat-model requirement.
+ * The only remaining path is a deliberately crafted valid-but-huge-dimension
+ * decompression bomb; that is a trusted operator feeding hostile bytes to their
+ * OWN browser (an explicit Non-goal) and is bounded by the 10 MiB cap and the
+ * off-thread async decoder. Falsifiable: if any caller invokes this without a
+ * prior size cap or outside a try/catch, that caller is the defect, not this.
  */
 export async function readImageDimensions(file: Blob): Promise<ImageDimensions> {
   if (typeof createImageBitmap === "function") {
