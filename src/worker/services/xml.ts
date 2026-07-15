@@ -1,5 +1,5 @@
 /**
- * XML string helpers (mvp-design.md section 13.4).
+ * XML string helpers.
  *
  * Every string that enters the generated RSS document passes through one of
  * these helpers; nothing is ever concatenated into XML unescaped. Input line

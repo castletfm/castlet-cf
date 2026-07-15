@@ -6,7 +6,7 @@ import type { AppEnv } from "../app-env";
 
 /**
  * Error envelope shared by all API error responses.
- * See mvp-design.md section 15.1. Never include stack traces, SQL text,
+ * Never include stack traces, SQL text,
  * secrets, signed URLs, or raw provider error bodies.
  */
 export interface ErrorEnvelope {

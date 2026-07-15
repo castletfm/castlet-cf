@@ -1,8 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
 /**
- * Playwright config for the single mandatory e2e happy path (mvp-design.md
- * section 18.3). Kept separate from `pnpm test` (Vitest unit/integration) so
+ * Playwright config for the single mandatory e2e happy path. Kept separate
+ * from `pnpm test` (Vitest unit/integration) so
  * the fast suite stays fast; run this with `pnpm test:e2e`.
  *
  * The `webServer` builds the SPA, applies local D1 migrations, and starts

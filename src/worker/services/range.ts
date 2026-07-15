@@ -1,6 +1,5 @@
 /**
- * Single byte-range parser for public media delivery (mvp-design.md
- * section 14.3).
+ * Single byte-range parser for public media delivery.
  *
  * Exactly three forms are accepted:
  *

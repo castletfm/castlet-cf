@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BASE } from "./session-helper";
 
 /**
- * Public media delivery (mvp-design.md section 14): GET/HEAD
+ * Public media delivery: GET/HEAD
  * /media/{showId}/{episodeId}/{objectId}.{ext} and
  * /artwork/{showId}/{objectId}.{ext} with byte ranges, conditional
  * requests, immutable caching, and one analytics event per response.

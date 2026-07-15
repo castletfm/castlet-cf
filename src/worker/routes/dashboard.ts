@@ -11,7 +11,7 @@ import { getAccountUsage } from "../services/quota";
 import { uploadDeps } from "./uploads";
 
 /**
- * GET /api/dashboard (mvp-design.md section 15.2): storage counters,
+ * GET /api/dashboard: storage counters,
  * feed-dirty shows, and recent episodes. Also runs the capped expiration
  * sweep opportunistically (section 11.6: lightweight cleanup on dashboard
  * load, bounded per request).

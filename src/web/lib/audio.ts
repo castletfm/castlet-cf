@@ -1,5 +1,5 @@
 /**
- * Client-side audio duration probe (mvp-design.md sections 11.2–11.5).
+ * Client-side audio duration probe.
  *
  * `readAudioDuration` is a best-effort, ADVISORY read: the Worker re-derives the
  * duration when the upload completes, so this value never gates the upload. The

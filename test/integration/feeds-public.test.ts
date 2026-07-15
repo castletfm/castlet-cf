@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BASE, uniqueSlug } from "./session-helper";
 
 /**
- * Public feed delivery (mvp-design.md section 13.1): GET/HEAD
+ * Public feed delivery: GET/HEAD
  * /feeds/{slug}.xml served from the canonical R2 object, never rebuilt per
  * request. Publishing-side generation of the canonical object is covered by
  * publishing.test.ts; these tests seed the R2 object directly.

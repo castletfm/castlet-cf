@@ -1,4 +1,4 @@
--- Initial schema (mvp-design.md section 9).
+-- Initial schema.
 --
 -- D1 note: the design template opened with `PRAGMA foreign_keys = ON;`.
 -- D1 does not accept `PRAGMA foreign_keys` inside migration files (it is not

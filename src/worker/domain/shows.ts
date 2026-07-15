@@ -14,7 +14,7 @@ import {
 import { synchronizeFeed, type FeedSyncDeps } from "../services/feed-sync";
 
 /**
- * Show business rules (mvp-design.md sections 9.1, 12.1, 12.5).
+ * Show business rules.
  * Routes translate the returned error tags into HTTP status codes.
  */
 

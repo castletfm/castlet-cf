@@ -1,5 +1,5 @@
 /**
- * Storage maintenance (mvp-design.md section 16): review orphaned objects and
+ * Storage maintenance: review orphaned objects and
  * purge them with confirmation, and run the maintenance action showing its
  * report.
  */

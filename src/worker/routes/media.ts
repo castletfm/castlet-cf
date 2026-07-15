@@ -14,7 +14,7 @@ import { isNotModified } from "../services/http-conditional";
 import { parseRangeHeader } from "../services/range";
 
 /**
- * Public immutable media delivery (mvp-design.md sections 14 and 4.2):
+ * Public immutable media delivery:
  *
  *   GET|HEAD /artwork/{showId}/{objectId}.{ext}
  *   GET|HEAD /media/{showId}/{episodeId}/{objectId}.{ext}

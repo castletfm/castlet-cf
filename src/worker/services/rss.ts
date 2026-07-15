@@ -3,7 +3,7 @@ import type { EpisodeStatus, EpisodeType } from "../../shared/contracts";
 import { cdataSection, escapeXmlAttribute, escapeXmlText } from "./xml";
 
 /**
- * RSS 2.0 document builder (mvp-design.md section 13).
+ * RSS 2.0 document builder.
  *
  * Builds the canonical feed XML from plain inputs; reading show/episode rows
  * and writing the result to R2 is feed-sync.ts's job. Only published

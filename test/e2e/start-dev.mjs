@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Local dev server for the Playwright e2e (mvp-design.md section 18.3).
+ * Local dev server for the Playwright e2e.
  *
  * Started by playwright.config.ts as its `webServer`. It builds the SPA,
  * applies the local D1 migrations, then runs `wrangler dev` in local mode so

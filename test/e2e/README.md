@@ -1,6 +1,6 @@
 # End-to-end test (Playwright)
 
-One mandatory happy path (mvp-design.md section 18.3), driven through the real
+One mandatory happy path, driven through the real
 admin SPA against a local `wrangler dev`:
 
 log in → create show → upload artwork → create episode → upload MP3 → publish →

@@ -5,7 +5,7 @@ import { getAccountUsage, reconcileAccountUsage } from "../services/quota";
 import { sweepExpiredUploadIntents, type UploadDeps } from "./storage";
 
 /**
- * POST /api/maintenance/run (mvp-design.md sections 11.6 and 17).
+ * POST /api/maintenance/run.
  *
  * 1. Expire overdue upload intents with a larger cap than the opportunistic
  *    sweeps: release reservations and delete pending R2 objects.

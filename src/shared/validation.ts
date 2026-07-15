@@ -4,7 +4,6 @@ import { containsInvalidXmlChar } from "../worker/services/xml";
 
 /**
  * Zod schemas shared by the Worker API and the admin SPA.
- * Validation rules come from mvp-design.md sections 9.1, 12.1, and 12.2.
  */
 
 /**
@@ -169,7 +168,7 @@ export const episodePatchSchema = z
   });
 
 // ---------------------------------------------------------------------------
-// Uploads (mvp-design.md sections 11.1, 11.3, 11.5)
+// Uploads
 // ---------------------------------------------------------------------------
 
 export const ownerKindSchema = z.enum(["show", "episode"]);

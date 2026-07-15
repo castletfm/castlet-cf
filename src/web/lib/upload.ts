@@ -1,5 +1,5 @@
 /**
- * Browser direct-upload flow (mvp-design.md sections 11.3–11.5).
+ * Browser direct-upload flow.
  *
  * The upload runs in three server-visible steps: initiate (reserve quota and
  * get a presigned PUT), PUT the bytes straight to R2 with progress, then

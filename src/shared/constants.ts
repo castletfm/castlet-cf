@@ -1,6 +1,5 @@
 /**
  * Application-wide constants shared by the Worker and the admin SPA.
- * Values come from mvp-design.md sections 8, 13, 14, and 17.
  */
 
 /** Application version reported by GET /api/health. */

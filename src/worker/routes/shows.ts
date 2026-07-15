@@ -17,7 +17,7 @@ import { readJsonBody, validationFailed } from "./common";
 import { feedSyncDeps } from "./episodes";
 
 /**
- * Show management routes (mvp-design.md section 15.2), mounted at /api/shows
+ * Show management routes, mounted at /api/shows
  * behind sessionAuth + csrfProtection. There is deliberately no DELETE: the
  * design's API surface offers soft deactivation only (section 12.5).
  */

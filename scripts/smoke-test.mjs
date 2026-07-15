@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Deployment smoke test (mvp-design.md section 18.4).
+ * Deployment smoke test.
  *
  * Exercises the public surface of a deployed (or locally running) Castlet
  * instance the way a podcast client would: liveness, the canonical feed, and
  * immutable media delivery including a single byte range. It is the scripted
- * form of the section 18.4 curls:
+ * form of these curls:
  *
  *   curl -fsS  "${BASE_URL}/api/health"
  *   curl -fsSI "${BASE_URL}/feeds/${SHOW_SLUG}.xml"
@@ -37,7 +37,7 @@ const RANGE_BYTES = 1024;
 function usage() {
   process.stderr.write(
     [
-      "Castlet deployment smoke test (mvp-design.md 18.4)",
+      "Castlet deployment smoke test",
       "",
       "Usage:",
       "  node scripts/smoke-test.mjs <BASE_URL> [SHOW_SLUG] [MEDIA_URL]",

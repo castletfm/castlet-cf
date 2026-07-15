@@ -6,7 +6,7 @@ import { FEED_CACHE_CONTROL, FEED_CONTENT_TYPE, feedObjectKey } from "../service
 import { isNotModified } from "../services/http-conditional";
 
 /**
- * Public RSS feed delivery (mvp-design.md sections 13.1 and 4.2):
+ * Public RSS feed delivery:
  * GET/HEAD /feeds/{slug}.xml. Mounted at /feeds with no authentication.
  *
  * The endpoint only reads the canonical, already-generated R2 object

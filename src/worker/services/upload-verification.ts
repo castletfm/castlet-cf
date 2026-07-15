@@ -1,7 +1,6 @@
 /**
- * File-signature verification for completed uploads (mvp-design.md section
- * 11.5, step 5). Checks operate on a small initial byte range — never a
- * complete object — per section 17, items 11 and 12.
+ * File-signature verification for completed uploads. Checks operate on a
+ * small initial byte range — never a complete object.
  */
 
 /** Bytes to fetch with the single ranged GET at completion time. */

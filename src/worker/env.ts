@@ -2,7 +2,7 @@
  * Worker environment bindings and variables.
  *
  * Mirrors wrangler.jsonc (bindings, vars) plus the secrets installed with
- * `wrangler secret put`. See mvp-design.md section 8.
+ * `wrangler secret put`.
  */
 export interface Env {
   DB: D1Database;
@@ -41,7 +41,7 @@ export interface Env {
    * local R2 bucket (a local `wrangler dev` has no reachable presigned-PUT
    * endpoint). Absent from wrangler.jsonc `vars` and .dev.vars.example, so a
    * real deployment never sets it and the shim stays 404. See
-   * routes/e2e-shim.ts and mvp-design.md section 18.3.
+   * routes/e2e-shim.ts.
    */
   E2E_UPLOAD_SHIM?: string;
 }

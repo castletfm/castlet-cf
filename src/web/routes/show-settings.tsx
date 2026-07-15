@@ -1,5 +1,5 @@
 /**
- * Show settings (mvp-design.md section 16): edit metadata with optimistic
+ * Show settings: edit metadata with optimistic
  * concurrency (409 → refetch + notify), upload artwork, copy the public feed
  * URL, and view/repair feed synchronization state.
  */

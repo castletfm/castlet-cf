@@ -87,7 +87,7 @@ export interface EpisodeListResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Uploads (mvp-design.md sections 11.3 and 11.5)
+// Uploads
 // ---------------------------------------------------------------------------
 
 export type OwnerKind = z.infer<typeof ownerKindSchema>;
@@ -128,7 +128,7 @@ export interface StorageObjectResource {
 export type UploadCompleteResponse = StorageObjectResource;
 
 // ---------------------------------------------------------------------------
-// Dashboard (mvp-design.md section 15.2, GET /api/dashboard)
+// Dashboard (GET /api/dashboard)
 // ---------------------------------------------------------------------------
 
 /** Storage counters from account_usage plus the configured ceiling. */
@@ -148,7 +148,7 @@ export interface DashboardResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Analytics (mvp-design.md section 15.2, GET /api/analytics/episodes)
+// Analytics (GET /api/analytics/episodes)
 // ---------------------------------------------------------------------------
 
 /**
@@ -175,7 +175,7 @@ export interface AnalyticsEpisodesResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Storage administration (mvp-design.md section 15.2)
+// Storage administration
 // ---------------------------------------------------------------------------
 
 /** One orphaned object in GET /api/storage/orphans. */
@@ -198,7 +198,7 @@ export interface OrphanListResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Maintenance (mvp-design.md sections 11.6 and 17, POST /api/maintenance/run)
+// Maintenance (POST /api/maintenance/run)
 // ---------------------------------------------------------------------------
 
 /** Difference between recorded account_usage counters and D1-derived sums. */

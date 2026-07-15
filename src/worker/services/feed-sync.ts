@@ -15,7 +15,7 @@ import {
 import { buildRssFeed } from "./rss";
 
 /**
- * Canonical feed synchronization (mvp-design.md sections 12.1, 12.3, 13.1).
+ * Canonical feed synchronization.
  *
  * synchronizeFeed() builds the RSS document from current D1 state and writes
  * it to R2 under feeds/{slug}.xml. Success advances feed_published_revision

@@ -1,5 +1,5 @@
 /**
- * Analytics (mvp-design.md section 16): per-show/episode request and byte
+ * Analytics: per-show/episode request and byte
  * totals over a date range within the Analytics Engine retention window.
  * Degrades gracefully when no analytics token is configured (available:false).
  *

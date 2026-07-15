@@ -18,7 +18,7 @@ const loginSchema = z.object({
 
 function sessionTtlSeconds(env: Env): number {
   const parsed = Number.parseInt(env.SESSION_TTL_SECONDS, 10);
-  // 12-hour default (mvp-design.md section 10.2) when the var is missing/bad.
+  // 12-hour default when the var is missing/bad.
   return Number.isFinite(parsed) && parsed > 0 ? parsed : SESSION_TTL_SECONDS;
 }
 

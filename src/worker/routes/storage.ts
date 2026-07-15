@@ -13,7 +13,7 @@ import { validationFailed } from "./common";
 const objectIdParamSchema = z.uuid();
 
 /**
- * Storage administration (mvp-design.md section 15.2):
+ * Storage administration:
  * GET /api/storage/orphans and DELETE /api/storage/{id}.
  */
 export const storageRoutes = new Hono<AppEnv>();

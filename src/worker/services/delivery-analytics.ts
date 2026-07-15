@@ -1,5 +1,5 @@
 /**
- * Delivery analytics writes (mvp-design.md section 14.5).
+ * Delivery analytics writes.
  *
  * One Analytics Engine data point per public media/artwork response,
  * enqueued via ctx.waitUntil() after the response is determined. Feed

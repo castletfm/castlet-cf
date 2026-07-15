@@ -1,8 +1,8 @@
 /**
  * Display formatters for the admin SPA.
  *
- * Byte sizes are shown in binary units (KiB/MiB/GiB) per mvp-design.md
- * section 16. These functions format for display only; the exact byte counts
+ * Byte sizes are shown in binary units (KiB/MiB/GiB). These functions format
+ * for display only; the exact byte counts
  * returned by the API are always preserved unchanged in application state and
  * only run through these helpers at render time.
  */
