@@ -3,6 +3,12 @@ import { fileURLToPath } from "node:url";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
+import {
+  TEST_ADMIN_ACCESS_KEY_SHA256,
+  TEST_SESSION_SIGNING_KEY,
+  TEST_TURNSTILE_SECRET_KEY,
+} from "./test/auth-constants";
+
 // Bindings are declared inline (instead of pointing the plugin at
 // wrangler.jsonc) so tests never depend on a prior `vite build` producing the
 // dist/ assets directory. Keep the binding names and vars in sync with
@@ -30,6 +36,10 @@ export default defineConfig(async () => {
             UPLOAD_URL_TTL_SECONDS: "900",
             SESSION_TTL_SECONDS: "43200",
             TURNSTILE_SITE_KEY: "test-site-key",
+            // Test-only secret values (see test/auth-constants.ts).
+            ADMIN_ACCESS_KEY_SHA256: TEST_ADMIN_ACCESS_KEY_SHA256,
+            SESSION_SIGNING_KEY: TEST_SESSION_SIGNING_KEY,
+            TURNSTILE_SECRET_KEY: TEST_TURNSTILE_SECRET_KEY,
             TEST_MIGRATIONS: migrations,
           },
         },
