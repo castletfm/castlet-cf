@@ -1,0 +1,46 @@
+// Cloudflare Worker configuration.
+// Template: mvp-design.md section 8. Identifiers (name, database_id, bucket) are
+// created during setup; replace REPLACE_ME values before deploying.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "castlet",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-07-15",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/feeds/*", "/media/*", "/artwork/*"],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "castlet-db",
+      "database_id": "REPLACE_ME",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "castlet-media",
+    },
+  ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "DELIVERY_ANALYTICS",
+      "dataset": "podcast_delivery",
+    },
+  ],
+  "vars": {
+    "PUBLIC_BASE_URL": "https://castlet.USERNAME.workers.dev",
+    "R2_ACCOUNT_ID": "REPLACE_ME",
+    "R2_BUCKET_NAME": "castlet-media",
+    "MAX_TOTAL_STORAGE_BYTES": "9126805504",
+    "MAX_AUDIO_BYTES": "262144000",
+    "MAX_ARTWORK_BYTES": "10485760",
+    "UPLOAD_URL_TTL_SECONDS": "900",
+    "SESSION_TTL_SECONDS": "43200",
+    "TURNSTILE_SITE_KEY": "REPLACE_ME",
+  },
+}
