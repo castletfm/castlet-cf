@@ -1,0 +1,7 @@
+dist/
+node_modules/
+.wrangler/
+.tmp/
+coverage/
+pnpm-lock.yaml
+mvp-design.md

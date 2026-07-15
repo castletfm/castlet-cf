@@ -1,0 +1,18 @@
+# Local development secrets for `wrangler dev`.
+# Copy to .dev.vars (gitignored) and fill in real values.
+# Production values are installed with `wrangler secret put <NAME>`.
+
+# Lowercase SHA-256 hex digest of the operator access key.
+# Generate with: node scripts/hash-admin-key.mjs
+ADMIN_ACCESS_KEY_SHA256=0000000000000000000000000000000000000000000000000000000000000000
+
+# Random key used to HMAC-sign session cookies (32+ random bytes, base64 or hex).
+SESSION_SIGNING_KEY=replace-with-random-32-byte-value
+
+# Turnstile secret key for the login widget.
+# Cloudflare's "always passes" test secret works for local development:
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+
+# Bucket-scoped R2 API token used only for presigned upload URL signing.
+R2_ACCESS_KEY_ID=replace-with-r2-access-key-id
+R2_SECRET_ACCESS_KEY=replace-with-r2-secret-access-key

@@ -1,0 +1,29 @@
+/**
+ * Worker environment bindings and variables.
+ *
+ * Mirrors wrangler.jsonc (bindings, vars) plus the secrets installed with
+ * `wrangler secret put`. See mvp-design.md section 8.
+ */
+export interface Env {
+  DB: D1Database;
+  MEDIA: R2Bucket;
+  ASSETS: Fetcher;
+  DELIVERY_ANALYTICS: AnalyticsEngineDataset;
+
+  PUBLIC_BASE_URL: string;
+  R2_ACCOUNT_ID: string;
+  R2_BUCKET_NAME: string;
+  MAX_TOTAL_STORAGE_BYTES: string;
+  MAX_AUDIO_BYTES: string;
+  MAX_ARTWORK_BYTES: string;
+  UPLOAD_URL_TTL_SECONDS: string;
+  SESSION_TTL_SECONDS: string;
+  TURNSTILE_SITE_KEY: string;
+
+  // Secrets (never committed; see .dev.vars.example for local development).
+  ADMIN_ACCESS_KEY_SHA256: string;
+  SESSION_SIGNING_KEY: string;
+  TURNSTILE_SECRET_KEY: string;
+  R2_ACCESS_KEY_ID: string;
+  R2_SECRET_ACCESS_KEY: string;
+}
