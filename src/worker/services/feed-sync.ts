@@ -178,10 +178,7 @@ export async function synchronizeFeed(deps: FeedSyncDeps, showId: string): Promi
  * Re-reads the show under the lock so the XML reflects the current
  * feed_revision and data rather than a stale pre-lock snapshot.
  */
-async function synchronizeFeedLocked(
-  deps: FeedSyncDeps,
-  showId: string,
-): Promise<FeedSyncResult> {
+async function synchronizeFeedLocked(deps: FeedSyncDeps, showId: string): Promise<FeedSyncResult> {
   const { db, media } = deps;
 
   const show = await getShowById(db, showId);
