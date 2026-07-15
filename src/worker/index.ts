@@ -7,6 +7,8 @@ import { csrfProtection } from "./middleware/csrf";
 import { notFound, onError } from "./middleware/errors";
 import { requestId } from "./middleware/request-id";
 import { authRoutes } from "./routes/auth";
+import { episodeRoutes, showEpisodeRoutes } from "./routes/episodes";
+import { showRoutes } from "./routes/shows";
 
 const app = new Hono<AppEnv>();
 
@@ -24,9 +26,12 @@ app.use("/api/*", csrfProtection());
 app.get("/api/health", (c) => c.json({ status: "ok", version: APP_VERSION }));
 
 app.route("/api/auth", authRoutes);
+app.route("/api/shows", showRoutes);
+app.route("/api/shows", showEpisodeRoutes);
+app.route("/api/episodes", episodeRoutes);
 
-// Later phases add /api/shows, /api/episodes, /api/uploads,
-// /feeds/*, /media/*, /artwork/*, analytics, and maintenance routes here.
+// Later phases add /api/uploads, /feeds/*, /media/*, /artwork/*, analytics,
+// and maintenance routes here.
 
 app.notFound(notFound);
 app.onError(onError);
