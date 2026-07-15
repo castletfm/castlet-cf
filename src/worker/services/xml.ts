@@ -19,6 +19,20 @@ const INVALID_XML_CHARS = new RegExp(
   "u",
 );
 
+/**
+ * True when `value` contains a character that XML 1.0 cannot represent. This is
+ * the single source of truth for "which characters are invalid": the feed
+ * builder uses it (via {@link escapeXmlText} and friends) to reject such input,
+ * and the shared validation schemas use it to keep those characters out of
+ * stored show/episode text in the first place, so the two always agree. Line
+ * endings are normalized first so a lone CR (valid, later folded to LF) is not
+ * mistaken for an invalid control character. The regex has no `g` flag, so
+ * reusing the shared instance across calls is safe.
+ */
+export function containsInvalidXmlChar(value: string): boolean {
+  return INVALID_XML_CHARS.test(normalizeLineEndings(value));
+}
+
 /** Thrown when input contains a character that XML 1.0 cannot represent. */
 export class InvalidXmlCharacterError extends Error {
   constructor() {

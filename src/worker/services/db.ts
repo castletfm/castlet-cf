@@ -258,22 +258,37 @@ export function lockShowSlugStatement(
  * Records a successful canonical feed write (section 12.3): the published
  * revision catches up to the revision the XML was built from, the generation
  * timestamp is refreshed, and any previous feed_error is cleared.
+ *
+ * Compare-and-set: the mark applies only while shows.feed_revision still equals
+ * the revision this sync built (bound as the guard). Under two concurrent
+ * same-show syncs this stops a sync that built a now-superseded revision from
+ * advancing feed_published_revision past a newer one — only the sync that built
+ * the current latest revision marks the feed synchronized. Returns false when
+ * the guard did not match (a newer feed_revision exists), meaning a newer sync
+ * is responsible for the mark.
+ *
+ * Scope: this closes the stale-mark case only. It does NOT serialize the two
+ * R2 PUTs, so a physically-reordered pair of writes to feeds/{slug}.xml can
+ * still leave R2 holding the older revision's XML. Full per-show serialization
+ * (e.g. a Durable Object gating build+PUT+mark) is deferred; the baseline
+ * reserves that coordination machinery for later (section 2).
  */
 export async function markShowFeedSynchronized(
   db: D1Database,
   showId: string,
   revision: number,
   generatedAt: string,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const result = await db
     .prepare(
       `UPDATE shows SET
          feed_published_revision = ?, feed_last_generated_at = ?,
          feed_error = NULL, updated_at = ?
-       WHERE id = ?`,
+       WHERE id = ? AND feed_revision = ?`,
     )
-    .bind(revision, generatedAt, generatedAt, showId)
+    .bind(revision, generatedAt, generatedAt, showId, revision)
     .run();
+  return result.meta.changes > 0;
 }
 
 /** Stores a concise feed synchronization error (section 12.3). */

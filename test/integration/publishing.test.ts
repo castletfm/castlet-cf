@@ -452,6 +452,35 @@ describe("feed write failure and regenerate-feed", () => {
     expect(state.feed_error).toBeNull();
   });
 
+  it("returns a controlled 502 (not a 500) when a stored value makes the feed build throw", async () => {
+    // Validation rejects XML-1.0-invalid control characters at write time, so
+    // simulate a legacy row by writing U+0001 into the episode description
+    // directly. On publish the D1 state commits first, then buildRssFeed throws
+    // InvalidXmlCharacterError; the defense-in-depth catch must route that to
+    // the controlled feed_error / FEED_WRITE_FAILED (502) path (F3).
+    await makePublishable(episode.id);
+    const badDescription = `legacy${String.fromCharCode(1)}description`;
+    await env.DB.prepare("UPDATE episodes SET description = ? WHERE id = ?")
+      .bind(badDescription, episode.id)
+      .run();
+
+    const res = await publish(episode.id);
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error.code).toBe("FEED_WRITE_FAILED");
+    expect(body.error.details).toEqual({ retryable: true });
+
+    // The publish committed to D1, and the feed is marked dirty with a concise
+    // error — the designed retryable state, not a silent 500 with no feed_error.
+    expect((await episodeState(episode.id)).status).toBe("published");
+    const dirty = await showFeedState(show.id);
+    expect(dirty.feed_error).not.toBeNull();
+    expect(dirty.feed_published_revision).toBeLessThan(dirty.feed_revision);
+
+    // The build threw before any R2 write, so no feed object was created.
+    expect(await readFeed(show.slug)).toBeNull();
+  });
+
   it("allows an idempotent regenerate when revisions already match", async () => {
     await makePublishable(episode.id);
     expect((await publish(episode.id)).status).toBe(200);

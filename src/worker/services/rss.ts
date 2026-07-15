@@ -105,13 +105,19 @@ export function buildRssFeed(input: BuildFeedInput): string {
       return fallback;
     }
     try {
-      if (new URL(websiteUrl).protocol !== "https:") {
+      const parsed = new URL(websiteUrl);
+      // Emit the canonical, normalized form (new URL(...).href) rather than the
+      // raw string, so a stored scheme-only spelling such as "https:example.com"
+      // becomes "https://example.com/" instead of a malformed <link>. Re-check
+      // HTTPS and ASCII on the normalized value and fall back otherwise.
+      const normalized = parsed.href;
+      if (parsed.protocol !== "https:" || !ASCII_URL.test(normalized)) {
         return fallback;
       }
+      return normalized;
     } catch {
       return fallback;
     }
-    return websiteUrl;
   };
 
   const items = input.episodes

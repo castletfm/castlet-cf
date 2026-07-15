@@ -17,9 +17,11 @@ import { buildRssFeed } from "./rss";
  *
  * synchronizeFeed() builds the RSS document from current D1 state and writes
  * it to R2 under feeds/{slug}.xml. Success advances feed_published_revision
- * to the revision the XML was built from and clears feed_error; an R2 write
- * failure stores a concise feed_error and reports a retryable failure while
- * the previous canonical feed object stays intact.
+ * to the revision the XML was built from and clears feed_error. A build
+ * failure or an R2 write failure instead stores a concise feed_error and
+ * reports a retryable failure, leaving the caller's committed D1 state and the
+ * previous canonical feed object intact rather than throwing (so the route
+ * returns a controlled 502, never an uncaught 500).
  */
 
 export interface FeedSyncDeps {
@@ -39,6 +41,9 @@ export const FEED_CACHE_CONTROL = `public, max-age=${FEED_CACHE_MAX_AGE_SECONDS}
 
 /** Concise feed_error value; never a raw provider error body (section 15.1). */
 const FEED_WRITE_ERROR_MESSAGE = "Canonical feed write to R2 failed";
+
+/** Concise feed_error value for a build failure (e.g. XML-invalid stored text). */
+const FEED_BUILD_ERROR_MESSAGE = "Canonical feed generation failed";
 
 const feedEmailSchema = z.email().max(254);
 
@@ -116,42 +121,57 @@ export async function synchronizeFeed(deps: FeedSyncDeps, showId: string): Promi
 
   const builtRevision = show.feed_revision;
   const episodes = await listPublishedEpisodesForFeed(db, show.id, MAX_FEED_EPISODES);
-  const xml = buildRssFeed({
-    show: {
-      slug: show.slug,
-      title: show.title,
-      authorName: show.author_name,
-      ownerName: show.owner_name,
-      ownerEmail: show.owner_email,
-      description: show.description,
-      language: show.language,
-      categoryPrimary: show.category_primary,
-      categorySecondary: show.category_secondary,
-      explicit: show.explicit === 1,
-      websiteUrl: show.website_url,
-      copyrightText: show.copyright_text,
-      artworkPublicPath: readiness.artwork.public_path,
-    },
-    episodes: episodes.map((row) => ({
-      guid: row.guid,
-      title: row.title,
-      description: row.description,
-      status: row.status,
-      // The join only returns published rows, which always carry a timestamp.
-      publishedAt: row.published_at ?? row.updated_at,
-      episodeType: row.episode_type,
-      explicit: row.explicit === 1,
-      seasonNumber: row.season_number,
-      episodeNumber: row.episode_number,
-      durationSeconds: row.duration_seconds,
-      audioPublicPath: row.audio_public_path,
-      audioByteLength: row.audio_byte_length,
-      audioContentType: row.audio_content_type,
-    })),
-    publicBaseUrl: deps.publicBaseUrl,
-  });
-
   const nowIso = new Date().toISOString();
+
+  let xml: string;
+  try {
+    xml = buildRssFeed({
+      show: {
+        slug: show.slug,
+        title: show.title,
+        authorName: show.author_name,
+        ownerName: show.owner_name,
+        ownerEmail: show.owner_email,
+        description: show.description,
+        language: show.language,
+        categoryPrimary: show.category_primary,
+        categorySecondary: show.category_secondary,
+        explicit: show.explicit === 1,
+        websiteUrl: show.website_url,
+        copyrightText: show.copyright_text,
+        artworkPublicPath: readiness.artwork.public_path,
+      },
+      episodes: episodes.map((row) => ({
+        guid: row.guid,
+        title: row.title,
+        description: row.description,
+        status: row.status,
+        // The join only returns published rows, which always carry a timestamp.
+        publishedAt: row.published_at ?? row.updated_at,
+        episodeType: row.episode_type,
+        explicit: row.explicit === 1,
+        seasonNumber: row.season_number,
+        episodeNumber: row.episode_number,
+        durationSeconds: row.duration_seconds,
+        audioPublicPath: row.audio_public_path,
+        audioByteLength: row.audio_byte_length,
+        audioContentType: row.audio_content_type,
+      })),
+      publicBaseUrl: deps.publicBaseUrl,
+    });
+  } catch {
+    // Defense in depth: a feed-visible field holding a character XML 1.0 cannot
+    // represent (InvalidXmlCharacterError) — or any other build failure — would
+    // otherwise throw uncaught here, after the caller has already committed the
+    // publish and feed-revision bump to D1, yielding a 500 with no feed_error.
+    // Validation normally rejects such input at write time (validation.ts); this
+    // covers legacy rows and any edge path by routing the failure to the same
+    // controlled, retryable feed_error path as an R2 write failure (section
+    // 12.3), so the request returns FEED_WRITE_FAILED (mapped to 502), not 500.
+    await setShowFeedError(db, show.id, FEED_BUILD_ERROR_MESSAGE, nowIso);
+    return { ok: false, error: "FEED_WRITE_FAILED" };
+  }
+
   try {
     await media.put(feedObjectKey(show.slug), xml, {
       httpMetadata: {
@@ -166,6 +186,10 @@ export async function synchronizeFeed(deps: FeedSyncDeps, showId: string): Promi
     return { ok: false, error: "FEED_WRITE_FAILED" };
   }
 
+  // Compare-and-set mark (see markShowFeedSynchronized): advances the published
+  // revision only while feed_revision still equals builtRevision. A concurrent
+  // newer sync that superseded this build leaves the guard unmatched, so this
+  // (now-stale) sync does not mark synchronized — the newer sync does.
   await markShowFeedSynchronized(db, show.id, builtRevision, nowIso);
   return { ok: true, revision: builtRevision };
 }

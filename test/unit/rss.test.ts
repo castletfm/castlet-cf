@@ -237,6 +237,26 @@ describe("buildRssFeed", () => {
     expect(xml).toContain("<link>https://example.invalid/</link>");
   });
 
+  it.each([
+    ["a scheme-only stored URL", "https:example.com", "https://example.com/"],
+    ["a single-slash stored URL", "https:/example.com", "https://example.com/"],
+    ["an unnormalized stored host", "https://example.com", "https://example.com/"],
+  ])(
+    "normalizes %s in the channel link rather than emitting it raw",
+    (_name, websiteUrl, normalized) => {
+      // The schema now rejects these at write time (F4), but a legacy stored
+      // value must still be normalized via new URL(...).href, never emitted raw.
+      const xml = buildRssFeed({
+        show: showInput({ websiteUrl }),
+        episodes: [],
+        publicBaseUrl: BASE_URL,
+        generatedAt: new Date("2026-07-15T12:00:00.000Z"),
+      });
+      expect(xml).toContain(`<link>${normalized}</link>`);
+      expect(xml).not.toContain(`<link>${websiteUrl}</link>`);
+    },
+  );
+
   it("rejects a non-ASCII public URL", () => {
     expect(() =>
       buildRssFeed({
