@@ -9,7 +9,7 @@ The full specification lives in [`mvp-design.md`](./mvp-design.md).
 
 ## Status
 
-Phases 0 (bootstrap and infrastructure) and 1 (authentication shell) are
+Phases 0 (bootstrap and infrastructure) through 5 (public delivery) are
 implemented. The repo contains:
 
 - the Worker skeleton with `GET /api/health`, request-ID and error-envelope
@@ -27,13 +27,21 @@ implemented. The repo contains:
   Turnstile widget) and a logged-in view with logout;
 - the initial D1 migration with the complete data model;
 - shared numeric limits (storage quota, file-size caps, TTLs, feed cap);
-- Vitest 4 with the Cloudflare Workers pool, including D1/R2 test bindings and
-  automatic migration application in tests;
+- show and episode CRUD with optimistic concurrency and immutable GUIDs;
+- direct-to-R2 uploads via presigned PUT URLs with quota reservation and
+  signature verification;
+- RSS generation with canonical feeds stored in R2 at `feeds/{slug}.xml`;
+- public delivery: `GET`/`HEAD` `/feeds/{slug}.xml` served from the canonical
+  R2 object, and `GET`/`HEAD` `/artwork/...` and `/media/...` with single
+  byte-range support (`206`/`416`), conditional requests (`If-None-Match`,
+  `If-Modified-Since`), immutable cache headers, and one Analytics Engine
+  event per media response;
+- Vitest 4 with the Cloudflare Workers pool, including D1/R2/Analytics Engine
+  test bindings and automatic migration application in tests;
 - ESLint, Prettier, and strict TypeScript for worker, web, and shared code.
 
-Later phases add show/episode CRUD, direct-to-R2 uploads, RSS generation,
-public media delivery, analytics, and the real dashboard screens. None of
-those are implemented yet.
+Later phases add analytics queries, orphan purge, maintenance, and the real
+dashboard screens. None of those are implemented yet.
 
 ## Stack
 
@@ -133,3 +141,11 @@ bucket on R2 Standard storage and keep the `r2.dev` public URL disabled.
   build-time env var or per-environment rebuild is needed.
 - **TypeScript is pinned to 5.x** (not the new 7.x line) because
   `typescript-eslint` currently supports `>=4.8.4 <6.1.0`.
+- **`If-Range` supports exact ETag matches only** (design section 14.4 allows
+  deferring it as long as no incorrect partial data is served). When an
+  `If-Range` header exactly equals the media object's current quoted ETag,
+  the requested range is honored with `206`. Any other `If-Range` value —
+  a different ETag or an HTTP-date validator, which is not supported — makes
+  the worker ignore the range and return the full `200` response, which is
+  always safe. `HEAD` requests ignore `Range` and return full-entity headers,
+  as RFC 9110 permits.

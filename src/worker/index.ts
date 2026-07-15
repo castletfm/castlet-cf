@@ -8,12 +8,21 @@ import { notFound, onError } from "./middleware/errors";
 import { requestId } from "./middleware/request-id";
 import { authRoutes } from "./routes/auth";
 import { episodeRoutes, showEpisodeRoutes } from "./routes/episodes";
+import { feedRoutes } from "./routes/feeds";
+import { artworkRoutes, mediaRoutes } from "./routes/media";
 import { showRoutes } from "./routes/shows";
 import { uploadRoutes } from "./routes/uploads";
 
 const app = new Hono<AppEnv>();
 
 app.use("*", requestId());
+
+// Public delivery routes (sections 13.1 and 14): no authentication. They
+// live outside /api and are registered before the API middleware; the
+// wrangler.jsonc run_worker_first patterns already route them to the worker.
+app.route("/feeds", feedRoutes);
+app.route("/artwork", artworkRoutes);
+app.route("/media", mediaRoutes);
 
 // Every /api/* route is protected by default: sessionAuth() rejects requests
 // without a valid session cookie (401) except for the public paths listed in
@@ -32,8 +41,7 @@ app.route("/api/shows", showEpisodeRoutes);
 app.route("/api/episodes", episodeRoutes);
 app.route("/api/uploads", uploadRoutes);
 
-// Later phases add /feeds/*, /media/*, /artwork/*, analytics, and
-// maintenance routes here.
+// Later phases add analytics-query and maintenance routes here.
 
 app.notFound(notFound);
 app.onError(onError);

@@ -26,6 +26,7 @@ export default defineConfig(async () => {
           compatibilityDate: "2026-07-15",
           d1Databases: ["DB"],
           r2Buckets: ["MEDIA"],
+          analyticsEngineDatasets: { DELIVERY_ANALYTICS: { dataset: "podcast_delivery" } },
           bindings: {
             PUBLIC_BASE_URL: "http://example.com",
             R2_ACCOUNT_ID: "test-account",
