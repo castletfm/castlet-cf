@@ -113,11 +113,14 @@ export async function updateShow(
 
   const changingSlug = patch.slug !== undefined && patch.slug !== current.slug;
   if (changingSlug) {
+    // changingSlug guarantees patch.slug is defined; the ?? keeps the type
+    // string without a non-null assertion (same pattern as the write below).
+    const nextSlug = patch.slug ?? current.slug;
     // Slug is immutable once locked at first publish (section 9.1).
     if (current.slug_locked_at !== null) {
       return { ok: false, error: "SLUG_LOCKED" };
     }
-    const taken = await getShowBySlug(db, patch.slug);
+    const taken = await getShowBySlug(db, nextSlug);
     if (taken !== null && taken.id !== id) {
       return { ok: false, error: "SLUG_TAKEN" };
     }
