@@ -749,6 +749,65 @@ describe("POST /api/uploads/{id}/complete", () => {
     expect(after.active_bytes - before.active_bytes).toBe(64 + 80);
   });
 
+  it("does not spin forever when the owner is deleted mid-attach; orphans the object and reports OWNER_DELETED", async () => {
+    // Regression for an infinite-loop hazard in the compare-and-set attach
+    // loop: the intent is claimed completed and the object activated, then the
+    // owner (episode) is deleted before the attach lands. The attach matches
+    // zero rows every iteration and re-reading the owner yields null, so the
+    // pre-fix loop (which collapsed "owner missing" to "no attachment") never
+    // terminated. We reproduce the mechanism deterministically by deleting the
+    // episode exactly when the first attach batch runs, via a db proxy that
+    // also caps batch calls so the buggy loop fails fast instead of hanging.
+    const before = await usage();
+    const initiated = await initiateOk(audioInitiateBody({ size: 64 }));
+    const objectKey = await putObject(initiated.storageObjectId, mp3Bytes(64), "audio/mpeg");
+
+    const MAX_BATCH_CALLS = 5; // fix converges in 1 batch; buggy loop exceeds this
+    let batchCalls = 0;
+    const realBatch = env.DB.batch.bind(env.DB);
+    const racingDb = new Proxy(env.DB, {
+      get(target, prop, receiver) {
+        if (prop === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            batchCalls += 1;
+            if (batchCalls === 1) {
+              // Delete the owner right as the attach batch first runs, so the
+              // attach compare-and-set matches zero rows this iteration onward.
+              await env.DB.prepare("DELETE FROM episodes WHERE id = ?").bind(episode.id).run();
+            }
+            if (batchCalls > MAX_BATCH_CALLS) {
+              throw new Error("attach retry loop did not terminate");
+            }
+            return realBatch(statements);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as D1Database;
+
+    const deps: UploadDeps = { ...testDeps(), db: racingDb };
+    const result = await completeUpload(deps, initiated.uploadId, {});
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("OWNER_DELETED");
+    }
+    // The loop stopped promptly: a single attach batch, not a spin.
+    expect(batchCalls).toBe(1);
+
+    // The activated-but-unreferenced object is orphaned so purge reclaims it.
+    expect((await objectRow(initiated.storageObjectId)).status).toBe("orphaned");
+    // The R2 object is left in place for the purge step (design 11.5/11.6).
+    expect(await env.MEDIA.head(objectKey)).not.toBeNull();
+
+    // Accounting stays correct: the reservation was committed to active bytes,
+    // and the orphan's bytes keep counting as active until a later purge.
+    const after = await usage();
+    expect(after.reserved_bytes).toBe(before.reserved_bytes);
+    expect(after.active_bytes - before.active_bytes).toBe(64);
+  });
+
   it("returns 404 for an unknown upload id", async () => {
     const res = await complete(crypto.randomUUID());
     expect(res.status).toBe(404);

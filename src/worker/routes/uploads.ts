@@ -92,6 +92,20 @@ function uploadError(c: Context<AppEnv>, error: UploadErrorCode): Response {
       );
     case "ALREADY_COMPLETED":
       return errorResponse(c, 409, "ALREADY_COMPLETED", "This upload was already completed");
+    case "OWNER_DELETED":
+      return errorResponse(
+        c,
+        409,
+        "OWNER_DELETED",
+        "The upload owner was deleted before completion; the uploaded object was discarded",
+      );
+    case "ATTACH_CONFLICT":
+      return errorResponse(
+        c,
+        409,
+        "ATTACH_CONFLICT",
+        "Could not attach the uploaded object due to concurrent changes; please retry",
+      );
     case "INTENT_NOT_ACTIVE":
       return errorResponse(
         c,

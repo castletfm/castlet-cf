@@ -72,6 +72,8 @@ export type UploadErrorCode =
   // complete / abort
   | "NOT_FOUND"
   | "ALREADY_COMPLETED"
+  | "OWNER_DELETED"
+  | "ATTACH_CONFLICT"
   | "INTENT_NOT_ACTIVE"
   | "INTENT_EXPIRED"
   | "OBJECT_NOT_UPLOADED"
@@ -115,6 +117,16 @@ const FEED_AFFECTING_EPISODE_STATUSES: ReadonlySet<EpisodeStatus> = new Set([
   "published",
   "unpublished",
 ]);
+
+/**
+ * Upper bound on compare-and-set attach retries during completion. Real
+ * contention converges in one or two iterations; this cap only guards against
+ * a pathological non-converging loop (see `completeUpload`).
+ */
+const MAX_ATTACH_ATTEMPTS = 16;
+
+/** Owner state observed while retrying the completion attach. */
+type OwnerAttachment = { exists: false } | { exists: true; attachment: string | null };
 
 export function storageObjectRowToResource(row: StorageObjectRow): StorageObjectResource {
   return {
@@ -380,7 +392,11 @@ export async function completeUpload(
   let feedAffected: boolean;
   let feedShowId: string;
   let buildAttach: (expectedPreviousObjectId: string | null) => D1PreparedStatement;
-  let readCurrentAttachment: () => Promise<string | null>;
+  // Re-reads the owner during a lost-attach retry. The result distinguishes a
+  // deleted owner (`exists: false`) from an owner that still exists but points
+  // at no attachment (`attachment: null`); the two must not collapse to the
+  // same value, or a mid-attach owner deletion would spin the CAS loop forever.
+  let readOwnerAttachment: () => Promise<OwnerAttachment>;
   if (object.owner_kind === "show") {
     const show = await getShowById(db, object.owner_id);
     if (show === null) {
@@ -391,9 +407,11 @@ export async function completeUpload(
     feedShowId = show.id;
     buildAttach = (expectedPreviousObjectId) =>
       attachShowArtworkStatement(db, show.id, object.id, nowIso, expectedPreviousObjectId);
-    readCurrentAttachment = async () => {
+    readOwnerAttachment = async () => {
       const current = await getShowById(db, object.owner_id);
-      return current?.artwork_object_id ?? null;
+      return current === null
+        ? { exists: false }
+        : { exists: true, attachment: current.artwork_object_id };
     };
   } else {
     const episode = await getEpisodeById(db, object.owner_id);
@@ -412,9 +430,11 @@ export async function completeUpload(
         nowIso,
         expectedPreviousObjectId,
       );
-    readCurrentAttachment = async () => {
+    readOwnerAttachment = async () => {
       const current = await getEpisodeById(db, object.owner_id);
-      return current?.audio_object_id ?? null;
+      return current === null
+        ? { exists: false }
+        : { exists: true, attachment: current.audio_object_id };
     };
   }
 
@@ -449,17 +469,26 @@ export async function completeUpload(
   // just-attached object active-but-unreferenced (invariant 9.1). The attach
   // applies only while the owner still points at the attachment we observed;
   // the displaced object is orphaned in the same batch, keeping the winning
-  // path atomic. A lost attach (zero changed rows) means another completion
-  // attached first: re-read the owner's now-current attachment and retry
-  // against it, orphaning whatever we actually displace. Because the orphan
-  // guard is `status = 'active'`, orphaning a value we lost the race for is an
-  // idempotent no-op rather than a double-orphan. The end state after any
-  // interleaving: exactly one object attached+active, every other completed
-  // object for the owner orphaned.
+  // path atomic. A lost attach (zero changed rows) means either another
+  // completion attached first or the owner was deleted mid-flight. Re-read the
+  // owner to tell those apart:
+  //   - owner deleted: stop; the object was already activated but references
+  //     nobody, so orphan it (its bytes stay in active_bytes until purge
+  //     reclaims them) and report OWNER_DELETED. Retrying could never succeed.
+  //   - owner present: another completion won the attach; retry the CAS
+  //     against the now-current attachment, orphaning whatever we displace.
+  // Because the orphan guard is `status = 'active'`, orphaning a value we lost
+  // the race for is an idempotent no-op rather than a double-orphan. The retry
+  // count is bounded: real contention converges in one or two iterations, so a
+  // persistent lost attach with the owner still present is an anomaly, not
+  // normal contention -- after the cap we orphan the object and report
+  // ATTACH_CONFLICT rather than spin. The end state after any interleaving:
+  // exactly one object attached+active, every other completed object orphaned.
   const activate = activateStorageObjectStatement(db, object.id, head.size, head.etag, nowIso);
   let displaced = previousObjectId;
   let activatePending = true;
-  for (;;) {
+  let attached = false;
+  for (let attempt = 0; attempt < MAX_ATTACH_ATTEMPTS; attempt += 1) {
     const statements: D1PreparedStatement[] = [];
     if (activatePending) {
       statements.push(activate);
@@ -472,15 +501,32 @@ export async function completeUpload(
     const results = await db.batch(statements);
     activatePending = false;
     if ((results[attachIndex]?.meta.changes ?? 0) > 0) {
-      break; // won the attach; the displaced object (if any) is now orphaned
+      attached = true; // won the attach; the displaced object (if any) is now orphaned
+      break;
     }
-    // Another completion attached first. Re-read the owner's current
-    // attachment and retry the CAS against it.
-    const currentAttachment = await readCurrentAttachment();
-    if (currentAttachment === object.id) {
-      break; // our object is already the attachment; nothing left to displace
+    // Lost the attach. Re-read the owner to distinguish a deleted owner from a
+    // lost race against a concurrent completion.
+    const owner = await readOwnerAttachment();
+    if (!owner.exists) {
+      // The owner was deleted after we claimed the intent. The object is
+      // active but references nobody: orphan it so purge reclaims the bytes,
+      // then report the owner-missing failure.
+      await orphanStorageObjectStatement(db, object.id, nowIso).run();
+      return { ok: false, error: "OWNER_DELETED" };
     }
-    displaced = currentAttachment;
+    if (owner.attachment === object.id) {
+      attached = true; // our object is already the attachment; nothing left to displace
+      break;
+    }
+    displaced = owner.attachment;
+  }
+  if (!attached) {
+    // Retry cap reached with the owner still present: the CAS kept losing to a
+    // moving target beyond any plausible contention. Orphan the now-active
+    // object (invariant 9.1: never leave it active-but-unreferenced) and
+    // surface a conflict instead of looping forever.
+    await orphanStorageObjectStatement(db, object.id, nowIso).run();
+    return { ok: false, error: "ATTACH_CONFLICT" };
   }
   if (feedAffected) {
     await incrementShowFeedRevisionStatement(db, feedShowId, nowIso).run();
