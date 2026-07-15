@@ -81,6 +81,7 @@ export type UploadErrorCode =
   // complete / abort
   | "NOT_FOUND"
   | "ALREADY_COMPLETED"
+  | "OBJECT_PURGED"
   | "OWNER_DELETED"
   | "ATTACH_CONFLICT"
   | "INTENT_NOT_ACTIVE"
@@ -490,20 +491,45 @@ export async function completeUpload(
     return { ok: false, error: "ALREADY_COMPLETED" };
   }
 
+  // Activate the object with a status-guarded compare-and-set BEFORE committing
+  // bytes or attaching. Activation requires status='pending', so it is the
+  // chokepoint the object's lifecycle races on: SQLite lets exactly one of
+  // activation or a concurrent purge win the object's `pending` transition. A
+  // purge can reach this object precisely because our completed-intent claim
+  // above flipped the intent off 'initiated', which makes a concurrent
+  // purgeStorageObject fall through to its pending else-branch and claim
+  // pending->deleted (deleting the R2 bytes). If that purge won, this activation
+  // changes zero rows: the object is gone and its bytes were already removed
+  // from R2, so DO NOT commit bytes or attach a dead object. Release the
+  // reservation (reserved drops by exactly the reservation; active untouched)
+  // and report the conflict. Once activation wins, the object is 'active' and
+  // purge (which requires 'pending') can no longer touch it, so the rest is safe.
+  const activation = await activateStorageObjectStatement(
+    db,
+    object.id,
+    head.size,
+    head.etag,
+    nowIso,
+  ).run();
+  if (activation.meta.changes === 0) {
+    await releaseReservedBytes(db, intent.expected_size);
+    return { ok: false, error: "OBJECT_PURGED" };
+  }
+
   // Move the declared reservation to active storage using verified bytes.
   await commitReservedBytes(db, intent.expected_size, head.size);
 
-  // Activate the object and swap it onto its owner with a compare-and-set, so
-  // two concurrent completions for the same owner can never leave a
-  // just-attached object active-but-unreferenced (invariant 9.1). The attach
-  // applies only while the owner still points at the attachment we observed;
-  // the displaced object is orphaned in the same batch, keeping the winning
-  // path atomic. A lost attach (zero changed rows) means either another
-  // completion attached first or the owner was deleted mid-flight. Re-read the
-  // owner to tell those apart:
-  //   - owner deleted: stop; the object was already activated but references
-  //     nobody, so orphan it (its bytes stay in active_bytes until purge
-  //     reclaims them) and report OWNER_DELETED. Retrying could never succeed.
+  // Swap the now-active object onto its owner with a compare-and-set, so two
+  // concurrent completions for the same owner can never leave a just-attached
+  // object active-but-unreferenced (invariant 9.1). The attach applies only
+  // while the owner still points at the attachment we observed; the displaced
+  // object is orphaned in the same batch, keeping the winning path atomic. A
+  // lost attach (zero changed rows) means either another completion attached
+  // first or the owner was deleted mid-flight. Re-read the owner to tell those
+  // apart:
+  //   - owner deleted: stop; the object is active but references nobody, so
+  //     orphan it (its bytes stay in active_bytes until purge reclaims them)
+  //     and report OWNER_DELETED. Retrying could never succeed.
   //   - owner present: another completion won the attach; retry the CAS
   //     against the now-current attachment, orphaning whatever we displace.
   // Because the orphan guard is `status = 'active'`, orphaning a value we lost
@@ -515,17 +541,11 @@ export async function completeUpload(
   // contention. After the cap we orphan the object and report ATTACH_CONFLICT
   // rather than spin. The end state after any interleaving: exactly one object
   // attached+active, every other completed object orphaned.
-  const activate = activateStorageObjectStatement(db, object.id, head.size, head.etag, nowIso);
   let displaced = previousObjectId;
-  let activatePending = true;
   let attached = false;
   for (let attempt = 0; attempt < MAX_ATTACH_ATTEMPTS; attempt += 1) {
-    const statements: D1PreparedStatement[] = [];
-    if (activatePending) {
-      statements.push(activate);
-    }
-    const attachIndex = statements.length;
-    statements.push(buildAttach(displaced));
+    // buildAttach is always the first statement, so results[0] is the attach.
+    const statements: D1PreparedStatement[] = [buildAttach(displaced)];
     if (displaced !== null && displaced !== object.id) {
       statements.push(orphanStorageObjectStatement(db, displaced, nowIso));
     }
@@ -535,8 +555,7 @@ export async function completeUpload(
     // read-then-write window between the attach and the revision bump.
     statements.push(buildFeedBump());
     const results = await db.batch(statements);
-    activatePending = false;
-    if ((results[attachIndex]?.meta.changes ?? 0) > 0) {
+    if ((results[0]?.meta.changes ?? 0) > 0) {
       attached = true; // won the attach; the displaced object (if any) is now orphaned
       break;
     }
