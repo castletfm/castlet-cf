@@ -221,6 +221,15 @@ describe("GET /api/storage/orphans", () => {
     });
     expect(emptyCursor.status).toBe(422);
 
+    // A wrong-shaped cursor (valid o/i but an extra key) is 422, not stripped-and-accepted.
+    const extraKey = btoa(
+      JSON.stringify({ o: "2026-07-01T00:00:00.000Z", i: crypto.randomUUID(), x: 1 }),
+    );
+    const wrongShape = await SELF.fetch(`${BASE}/api/storage/orphans?cursor=${extraKey}`, {
+      headers: readHeaders(auth),
+    });
+    expect(wrongShape.status).toBe(422);
+
     const badLimit = await SELF.fetch(`${BASE}/api/storage/orphans?limit=99999`, {
       headers: readHeaders(auth),
     });

@@ -17,8 +17,13 @@ import { validationFailed } from "./common";
 /** Storage object ids are UUIDs; reject a malformed path param before any lookup. */
 const objectIdParamSchema = z.uuid();
 
-/** Opaque page cursor: base64(JSON) of the last row's (orphaned_at, id). */
-const cursorSchema = z.object({ o: z.string(), i: z.uuid() });
+/**
+ * Opaque page cursor: base64(JSON) of the last row's (orphaned_at, id).
+ * `.strict()` rejects any unknown key so a wrong-shaped cursor (extra fields and
+ * all) fails validation and is answered 422, rather than being silently stripped
+ * back to a shape that parses.
+ */
+const cursorSchema = z.object({ o: z.string(), i: z.uuid() }).strict();
 
 function encodeCursor(row: OrphanedStorageObjectRow): string {
   return btoa(JSON.stringify({ o: row.orphaned_at ?? "", i: row.id }));
