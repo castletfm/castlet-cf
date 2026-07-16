@@ -209,7 +209,7 @@ describe("GET /api/storage/orphans", () => {
     expect(new Set(seen).size).toBe(3);
   });
 
-  it("rejects a malformed cursor and an out-of-range limit with 422", async () => {
+  it("rejects a malformed cursor and an out-of-range or non-integer limit with 422", async () => {
     const badCursor = await SELF.fetch(`${BASE}/api/storage/orphans?cursor=not-base64!`, {
       headers: readHeaders(auth),
     });
@@ -219,6 +219,13 @@ describe("GET /api/storage/orphans", () => {
       headers: readHeaders(auth),
     });
     expect(badLimit.status).toBe(422);
+
+    // A non-integer whose Number() collapses to a valid integer must still 422 —
+    // the digit check runs on the raw text, not the parsed value.
+    const floatLimit = await SELF.fetch(`${BASE}/api/storage/orphans?limit=1.0000000000000001`, {
+      headers: readHeaders(auth),
+    });
+    expect(floatLimit.status).toBe(422);
   });
 });
 

@@ -4,7 +4,7 @@
  * report.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { MaintenanceRunResponse, OrphanedObjectResource } from "../../shared/contracts";
 import { ApiError, listOrphans, purgeStorageObject, runMaintenance } from "../api";
@@ -21,8 +21,15 @@ export function StorageScreen() {
   const [appended, setAppended] = useState<OrphanedObjectResource[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Bumped whenever the first page is replaced (initial load, purge, or
+  // maintenance reload). A load-more in flight captures the current value and
+  // discards its response if the generation changed meanwhile, so a reload that
+  // resolves before an older load-more can never let that stale page append a
+  // row the refreshed first page already shows (a duplicate key).
+  const generation = useRef(0);
   useEffect(() => {
     if (orphans.data !== null) {
+      generation.current += 1;
       setAppended([]);
       setNextCursor(orphans.data.nextCursor);
     }
@@ -31,14 +38,18 @@ export function StorageScreen() {
 
   async function loadMore() {
     if (nextCursor === null) return;
+    const gen = generation.current;
     setPurgeError(null);
     setLoadingMore(true);
     try {
       const page = await listOrphans(nextCursor);
+      if (generation.current !== gen) return; // first page was replaced mid-flight; discard
       setAppended((prev) => [...prev, ...page.orphans]);
       setNextCursor(page.nextCursor);
     } catch (err: unknown) {
-      setPurgeError(err instanceof ApiError ? err.message : "Could not load more orphans.");
+      if (generation.current === gen) {
+        setPurgeError(err instanceof ApiError ? err.message : "Could not load more orphans.");
+      }
     } finally {
       setLoadingMore(false);
     }

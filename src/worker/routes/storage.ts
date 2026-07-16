@@ -24,7 +24,16 @@ function encodeCursor(row: OrphanedStorageObjectRow): string {
   return btoa(JSON.stringify({ o: row.orphaned_at ?? "", i: row.id }));
 }
 
-/** Decodes the cursor; returns undefined when absent, throws on a malformed one. */
+/**
+ * Decodes the cursor; returns null when absent, throws on a malformed one.
+ *
+ * An EMPTY supplied value (`?cursor=`) is treated as ABSENT, not malformed: a
+ * cursor with no value carries no keyset position, so the only meaningful result
+ * is the first page. The null path runs the base (no-cursor) query, so this
+ * neither crashes, produces malformed SQL, nor skips/duplicates rows — the
+ * threat model's actual concerns. Falsifiable: if an empty cursor ever reached
+ * the cursor-bound query branch, that would be the defect.
+ */
 function decodeCursor(raw: string | undefined): OrphanCursor | null {
   if (raw === undefined || raw === "") {
     return null;
@@ -78,14 +87,24 @@ function purgeError(c: Context<AppEnv>, error: PurgeErrorCode): Response {
 }
 
 storageRoutes.get("/orphans", async (c) => {
-  const limitParam = Number(c.req.query("limit") ?? ORPHANS_PAGE_DEFAULT_LIMIT);
-  if (!Number.isInteger(limitParam) || limitParam < 1 || limitParam > ORPHANS_PAGE_MAX_LIMIT) {
-    return errorResponse(
+  const limitRaw = c.req.query("limit");
+  // Validate the RAW text as digits BEFORE Number(): a non-integer like
+  // "1.0000000000000001" collapses to exactly 1 under Number(), which would
+  // then slip past a Number.isInteger check — so the integer test must run on
+  // the text, not the parsed value.
+  const invalidLimit = () =>
+    errorResponse(
       c,
       422,
       "VALIDATION_FAILED",
       `limit must be an integer in 1..${ORPHANS_PAGE_MAX_LIMIT}`,
     );
+  if (limitRaw !== undefined && !/^[0-9]+$/.test(limitRaw)) {
+    return invalidLimit();
+  }
+  const limitParam = limitRaw === undefined ? ORPHANS_PAGE_DEFAULT_LIMIT : Number(limitRaw);
+  if (limitParam < 1 || limitParam > ORPHANS_PAGE_MAX_LIMIT) {
+    return invalidLimit();
   }
 
   let cursor: OrphanCursor | null;
