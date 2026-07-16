@@ -25,17 +25,13 @@ function encodeCursor(row: OrphanedStorageObjectRow): string {
 }
 
 /**
- * Decodes the cursor; returns null when absent, throws on a malformed one.
- *
- * An EMPTY supplied value (`?cursor=`) is treated as ABSENT, not malformed: a
- * cursor with no value carries no keyset position, so the only meaningful result
- * is the first page. The null path runs the base (no-cursor) query, so this
- * neither crashes, produces malformed SQL, nor skips/duplicates rows — the
- * threat model's actual concerns. Falsifiable: if an empty cursor ever reached
- * the cursor-bound query branch, that would be the defect.
+ * Decodes the cursor; returns null only when the param is ABSENT (undefined),
+ * throws on a malformed one. A SUPPLIED-but-empty value (`?cursor=`) is malformed,
+ * not absent: it is passed through decoding, where `JSON.parse("")` throws, so
+ * the handler rejects it with 422 like any other bad cursor.
  */
 function decodeCursor(raw: string | undefined): OrphanCursor | null {
-  if (raw === undefined || raw === "") {
+  if (raw === undefined) {
     return null;
   }
   const parsed = cursorSchema.parse(JSON.parse(atob(raw)) as unknown);

@@ -215,6 +215,12 @@ describe("GET /api/storage/orphans", () => {
     });
     expect(badCursor.status).toBe(422);
 
+    // A supplied-but-empty cursor is malformed, not "no cursor": 422, not page 1.
+    const emptyCursor = await SELF.fetch(`${BASE}/api/storage/orphans?cursor=`, {
+      headers: readHeaders(auth),
+    });
+    expect(emptyCursor.status).toBe(422);
+
     const badLimit = await SELF.fetch(`${BASE}/api/storage/orphans?limit=99999`, {
       headers: readHeaders(auth),
     });
