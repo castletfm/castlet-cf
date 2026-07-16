@@ -347,21 +347,29 @@ export async function acquireFeedSyncLock(
  * been stolen by another sync) fails closed instead of doing an R2 PUT that
  * could reorder with the new holder's. Narrows the reorder window from the whole
  * build+PUT to the PUT alone; fully closing it needs a Durable Object.
+ *
+ * The lease is compared against a time taken AFTER the read returns, not one
+ * captured before it: reading the holder+expiry and then deciding freshness in
+ * JS means a lease that lapses DURING a slow read is correctly seen as expired,
+ * where a pre-read `now` bound into the query could still read as held. ISO-8601
+ * UTC strings compare lexicographically, so the string `>` is a valid ordering.
  */
 export async function holdsFeedSyncLock(
   db: D1Database,
   showId: string,
   nonce: string,
-  nowIso: string,
 ): Promise<boolean> {
   const row = await db
     .prepare(
-      `SELECT 1 AS held FROM shows
-       WHERE id = ? AND feed_sync_lock_holder = ? AND feed_sync_lock_expires_at > ?`,
+      `SELECT feed_sync_lock_expires_at AS exp FROM shows
+       WHERE id = ? AND feed_sync_lock_holder = ?`,
     )
-    .bind(showId, nonce, nowIso)
-    .first<{ held: number }>();
-  return row !== null;
+    .bind(showId, nonce)
+    .first<{ exp: string | null }>();
+  if (row === null || row.exp === null) {
+    return false;
+  }
+  return row.exp > new Date().toISOString();
 }
 
 /**

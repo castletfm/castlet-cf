@@ -259,7 +259,7 @@ async function synchronizeFeedLocked(
   // that window to the PUT itself. It does NOT fully close it (a PUT already
   // in flight when the lease lapses can still reorder); doing that needs a
   // Durable Object. Return the retryable failure rather than writing.
-  if (!(await holdsFeedSyncLock(db, show.id, nonce, new Date().toISOString()))) {
+  if (!(await holdsFeedSyncLock(db, show.id, nonce))) {
     return { ok: false, error: "FEED_WRITE_FAILED" };
   }
 
