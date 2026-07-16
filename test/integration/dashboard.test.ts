@@ -106,6 +106,42 @@ describe("GET /api/dashboard", () => {
     expect(abort.status).toBe(204);
   });
 
+  it("reports orphaned bytes (the reclaimable subset) from orphaned objects only", async () => {
+    const show = await createShow();
+    expect((await getDashboard()).storage.orphanedBytes).toBe(0);
+
+    // Seed one orphaned and one active object; only the orphaned bytes count here.
+    const nowIso = new Date().toISOString();
+    async function seedObject(status: string, bytes: number): Promise<void> {
+      const id = crypto.randomUUID();
+      await env.DB.prepare(
+        `INSERT INTO storage_objects (
+           id, owner_kind, owner_id, kind, object_key, public_path,
+           original_filename, content_type, byte_length, etag, status,
+           created_at, activated_at, orphaned_at
+         ) VALUES (?, 'show', ?, 'artwork', ?, ?, 'a.jpg', 'image/jpeg', ?, 'e', ?, ?, ?, ?)`,
+      )
+        .bind(
+          id,
+          show.id,
+          `artwork/${id}.jpg`,
+          `/artwork/${id}.jpg`,
+          bytes,
+          status,
+          nowIso,
+          nowIso,
+          status === "orphaned" ? nowIso : null,
+        )
+        .run();
+    }
+    await seedObject("orphaned", 7000);
+    await seedObject("orphaned", 3000);
+    await seedObject("active", 50000);
+
+    // orphanedBytes = 7000 + 3000; the active object is excluded.
+    expect((await getDashboard()).storage.orphanedBytes).toBe(10000);
+  });
+
   it("detects feed-dirty shows both ways and omits synchronized shows", async () => {
     const show = await createShow();
 

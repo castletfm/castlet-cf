@@ -135,6 +135,12 @@ export type UploadCompleteResponse = StorageObjectResource;
 export interface StorageCounters {
   activeBytes: number;
   reservedBytes: number;
+  /**
+   * Bytes held by orphaned objects, a subset of activeBytes (orphaned objects
+   * count against the quota until purged). This is how much an explicit purge
+   * would reclaim; surfaced so the operator can decide when to purge.
+   */
+  orphanedBytes: number;
   /** MAX_TOTAL_STORAGE_BYTES for this deployment. */
   maxTotalBytes: number;
 }

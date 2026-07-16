@@ -174,10 +174,12 @@ export function ConfirmButton({
 export function StorageMeter({
   activeBytes,
   reservedBytes,
+  orphanedBytes,
   maxTotalBytes,
 }: {
   activeBytes: number;
   reservedBytes: number;
+  orphanedBytes: number;
   maxTotalBytes: number;
 }) {
   const used = activeBytes + reservedBytes;
@@ -213,6 +215,12 @@ export function StorageMeter({
         <div>
           <dt>Reserved</dt>
           <dd title={formatExactBytes(reservedBytes)}>{formatBytes(reservedBytes)}</dd>
+        </div>
+        <div>
+          <dt>Orphaned</dt>
+          <dd title={`${formatExactBytes(orphanedBytes)} — reclaimable by purging`}>
+            {formatBytes(orphanedBytes)}
+          </dd>
         </div>
         <div>
           <dt>Ceiling</dt>
