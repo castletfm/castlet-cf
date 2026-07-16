@@ -6,7 +6,7 @@ import type { AppEnv } from "../app-env";
 import { episodeRowToResource } from "../domain/episodes";
 import { showRowToResource } from "../domain/shows";
 import { sweepExpiredUploadIntents } from "../domain/storage";
-import { listFeedDirtyShows, listRecentEpisodes } from "../services/db";
+import { listFeedDirtyShows, listRecentEpisodes, sumOrphanedStorageBytes } from "../services/db";
 import { getAccountUsage } from "../services/quota";
 import { uploadDeps } from "./uploads";
 
@@ -23,6 +23,7 @@ dashboardRoutes.get("/", async (c) => {
 
   const db = c.env.DB;
   const usage = await getAccountUsage(db);
+  const orphanedBytes = await sumOrphanedStorageBytes(db);
   const dirtyShows = await listFeedDirtyShows(db);
   const recentEpisodes = await listRecentEpisodes(db, DASHBOARD_RECENT_EPISODES_LIMIT);
 
@@ -30,6 +31,7 @@ dashboardRoutes.get("/", async (c) => {
     storage: {
       activeBytes: usage.activeBytes,
       reservedBytes: usage.reservedBytes,
+      orphanedBytes,
       maxTotalBytes: Number(c.env.MAX_TOTAL_STORAGE_BYTES),
     },
     feedDirtyShows: dirtyShows.map(showRowToResource),

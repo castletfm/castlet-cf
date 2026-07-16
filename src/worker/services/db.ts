@@ -973,6 +973,22 @@ export async function sumCommittedStorageBytes(db: D1Database): Promise<number> 
 }
 
 /**
+ * Bytes held by orphaned objects — a subset of {@link sumCommittedStorageBytes}
+ * (which counts active plus orphaned). Orphaned bytes still count against the
+ * quota until the object is purged from R2, so surfacing this total tells the
+ * operator how much space an explicit purge would reclaim.
+ */
+export async function sumOrphanedStorageBytes(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(byte_length), 0) AS total
+       FROM storage_objects WHERE status = 'orphaned'`,
+    )
+    .first<{ total: number }>();
+  return row?.total ?? 0;
+}
+
+/**
  * Bytes that should be recorded as reserved: intents still in status
  * 'initiated' hold their reservation until completed, aborted, rejected, or
  * expired by the sweep — including overdue ones the capped sweep has not

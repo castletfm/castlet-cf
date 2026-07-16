@@ -58,6 +58,7 @@ export function DashboardScreen() {
             <StorageMeter
               activeBytes={data.storage.activeBytes}
               reservedBytes={data.storage.reservedBytes}
+              orphanedBytes={data.storage.orphanedBytes}
               maxTotalBytes={data.storage.maxTotalBytes}
             />
           </section>
