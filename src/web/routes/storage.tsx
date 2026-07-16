@@ -4,9 +4,9 @@
  * report.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import type { MaintenanceRunResponse } from "../../shared/contracts";
+import type { MaintenanceRunResponse, OrphanedObjectResource } from "../../shared/contracts";
 import { ApiError, listOrphans, purgeStorageObject, runMaintenance } from "../api";
 import { formatExactBytes, formatTimestamp } from "../lib/format";
 import { Banner, ByteSize, ConfirmButton, Spinner, useAsync } from "../components/ui";
@@ -14,6 +14,46 @@ import { Banner, ByteSize, ConfirmButton, Spinner, useAsync } from "../component
 export function StorageScreen() {
   const orphans = useAsync(() => listOrphans(), []);
   const [purgeError, setPurgeError] = useState<string | null>(null);
+
+  // Pages beyond the first are fetched on demand and appended. When the first
+  // page (re)loads — including after a purge or maintenance run — reset the
+  // appended pages and seed the cursor from it.
+  const [appended, setAppended] = useState<OrphanedObjectResource[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Bumped whenever the first page is replaced (initial load, purge, or
+  // maintenance reload). A load-more in flight captures the current value and
+  // discards its response if the generation changed meanwhile, so a reload that
+  // resolves before an older load-more can never let that stale page append a
+  // row the refreshed first page already shows (a duplicate key).
+  const generation = useRef(0);
+  useEffect(() => {
+    if (orphans.data !== null) {
+      generation.current += 1;
+      setAppended([]);
+      setNextCursor(orphans.data.nextCursor);
+    }
+  }, [orphans.data]);
+  const allOrphans = [...(orphans.data?.orphans ?? []), ...appended];
+
+  async function loadMore() {
+    if (nextCursor === null) return;
+    const gen = generation.current;
+    setPurgeError(null);
+    setLoadingMore(true);
+    try {
+      const page = await listOrphans(nextCursor);
+      if (generation.current !== gen) return; // first page was replaced mid-flight; discard
+      setAppended((prev) => [...prev, ...page.orphans]);
+      setNextCursor(page.nextCursor);
+    } catch (err: unknown) {
+      if (generation.current === gen) {
+        setPurgeError(err instanceof ApiError ? err.message : "Could not load more orphans.");
+      }
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   const [report, setReport] = useState<MaintenanceRunResponse | null>(null);
   const [maintenanceError, setMaintenanceError] = useState<string | null>(null);
@@ -91,14 +131,14 @@ export function StorageScreen() {
               </tr>
             </thead>
             <tbody>
-              {orphans.data.orphans.length === 0 && (
+              {allOrphans.length === 0 && (
                 <tr>
                   <td colSpan={6} className="muted">
                     No orphaned objects. Storage is clean.
                   </td>
                 </tr>
               )}
-              {orphans.data.orphans.map((orphan) => (
+              {allOrphans.map((orphan) => (
                 <tr key={orphan.id}>
                   <td>{orphan.kind}</td>
                   <td>{orphan.ownerTitle ?? <span className="muted">(owner removed)</span>}</td>
@@ -121,6 +161,11 @@ export function StorageScreen() {
               ))}
             </tbody>
           </table>
+        )}
+        {nextCursor !== null && (
+          <button type="button" className="btn" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
         )}
       </section>
     </section>

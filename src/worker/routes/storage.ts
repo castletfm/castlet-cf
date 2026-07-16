@@ -2,15 +2,46 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 
+import { ORPHANS_PAGE_DEFAULT_LIMIT, ORPHANS_PAGE_MAX_LIMIT } from "../../shared/constants";
 import type { OrphanListResponse, OrphanedObjectResource } from "../../shared/contracts";
 import type { AppEnv } from "../app-env";
 import { purgeStorageObject, type PurgeErrorCode } from "../domain/storage";
 import { errorResponse } from "../middleware/errors";
-import { listOrphanedStorageObjects, type OrphanedStorageObjectRow } from "../services/db";
+import {
+  listOrphanedStorageObjects,
+  type OrphanCursor,
+  type OrphanedStorageObjectRow,
+} from "../services/db";
 import { validationFailed } from "./common";
 
 /** Storage object ids are UUIDs; reject a malformed path param before any lookup. */
 const objectIdParamSchema = z.uuid();
+
+/**
+ * Opaque page cursor: base64(JSON) of the last row's (orphaned_at, id).
+ * `.strict()` rejects any unknown key so a wrong-shaped cursor (extra fields and
+ * all) fails validation and is answered 422, rather than being silently stripped
+ * back to a shape that parses.
+ */
+const cursorSchema = z.object({ o: z.string(), i: z.uuid() }).strict();
+
+function encodeCursor(row: OrphanedStorageObjectRow): string {
+  return btoa(JSON.stringify({ o: row.orphaned_at ?? "", i: row.id }));
+}
+
+/**
+ * Decodes the cursor; returns null only when the param is ABSENT (undefined),
+ * throws on a malformed one. A SUPPLIED-but-empty value (`?cursor=`) is malformed,
+ * not absent: it is passed through decoding, where `JSON.parse("")` throws, so
+ * the handler rejects it with 422 like any other bad cursor.
+ */
+function decodeCursor(raw: string | undefined): OrphanCursor | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const parsed = cursorSchema.parse(JSON.parse(atob(raw)) as unknown);
+  return { orphanedAt: parsed.o, id: parsed.i };
+}
 
 /**
  * Storage administration:
@@ -57,8 +88,38 @@ function purgeError(c: Context<AppEnv>, error: PurgeErrorCode): Response {
 }
 
 storageRoutes.get("/orphans", async (c) => {
-  const rows = await listOrphanedStorageObjects(c.env.DB);
-  const body: OrphanListResponse = { orphans: rows.map(orphanRowToResource) };
+  const limitRaw = c.req.query("limit");
+  // Validate the RAW text as digits BEFORE Number(): a non-integer like
+  // "1.0000000000000001" collapses to exactly 1 under Number(), which would
+  // then slip past a Number.isInteger check — so the integer test must run on
+  // the text, not the parsed value.
+  const invalidLimit = () =>
+    errorResponse(
+      c,
+      422,
+      "VALIDATION_FAILED",
+      `limit must be an integer in 1..${ORPHANS_PAGE_MAX_LIMIT}`,
+    );
+  if (limitRaw !== undefined && !/^[0-9]+$/.test(limitRaw)) {
+    return invalidLimit();
+  }
+  const limitParam = limitRaw === undefined ? ORPHANS_PAGE_DEFAULT_LIMIT : Number(limitRaw);
+  if (limitParam < 1 || limitParam > ORPHANS_PAGE_MAX_LIMIT) {
+    return invalidLimit();
+  }
+
+  let cursor: OrphanCursor | null;
+  try {
+    cursor = decodeCursor(c.req.query("cursor"));
+  } catch {
+    return errorResponse(c, 422, "VALIDATION_FAILED", "cursor is malformed");
+  }
+
+  const { rows, hasMore } = await listOrphanedStorageObjects(c.env.DB, limitParam, cursor);
+  const body: OrphanListResponse = {
+    orphans: rows.map(orphanRowToResource),
+    nextCursor: hasMore && rows.length > 0 ? encodeCursor(rows[rows.length - 1]!) : null,
+  };
   return c.json(body);
 });
 
