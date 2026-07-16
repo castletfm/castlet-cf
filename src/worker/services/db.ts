@@ -341,6 +341,38 @@ export async function acquireFeedSyncLock(
 }
 
 /**
+ * Whether this caller STILL holds the lock with an unexpired lease — the holder
+ * nonce still matches AND the lease has not passed. Checked immediately before
+ * the R2 write so a holder whose lease expired (and whose lock may already have
+ * been stolen by another sync) fails closed instead of doing an R2 PUT that
+ * could reorder with the new holder's. Narrows the reorder window from the whole
+ * build+PUT to the PUT alone; fully closing it needs a Durable Object.
+ *
+ * The lease is compared against a time taken AFTER the read returns, not one
+ * captured before it: reading the holder+expiry and then deciding freshness in
+ * JS means a lease that lapses DURING a slow read is correctly seen as expired,
+ * where a pre-read `now` bound into the query could still read as held. ISO-8601
+ * UTC strings compare lexicographically, so the string `>` is a valid ordering.
+ */
+export async function holdsFeedSyncLock(
+  db: D1Database,
+  showId: string,
+  nonce: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT feed_sync_lock_expires_at AS exp FROM shows
+       WHERE id = ? AND feed_sync_lock_holder = ?`,
+    )
+    .bind(showId, nonce)
+    .first<{ exp: string | null }>();
+  if (row === null || row.exp === null) {
+    return false;
+  }
+  return row.exp > new Date().toISOString();
+}
+
+/**
  * Releases the per-show feed-sync advisory lock. The holder guard makes this a
  * no-op unless this caller still owns the lock, so a caller whose lease already
  * expired (and was reclaimed by another sync) never clears the new holder.

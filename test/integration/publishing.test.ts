@@ -630,6 +630,53 @@ describe("concurrent same-show feed sync", () => {
     const state = await showFeedState(show.id);
     expect(state.feed_published_revision).toBeLessThan(state.feed_revision);
   });
+
+  it("fails closed without overwriting R2 when the lock lease lapses before the write", async () => {
+    await makePublishable(episode.id);
+    expect((await publish(episode.id)).status).toBe(200);
+    const feedBefore = (await readFeed(show.slug))?.text;
+    expect(feedBefore).toBeTruthy();
+
+    const deps = {
+      db: env.DB,
+      media: env.MEDIA,
+      publicBaseUrl: env.PUBLIC_BASE_URL as string,
+    };
+
+    // A new revision to sync.
+    await env.DB.prepare(
+      "UPDATE shows SET title = 'Lapsed', feed_revision = feed_revision + 1 WHERE id = ?",
+    )
+      .bind(show.id)
+      .run();
+
+    // Expire our own lease the instant the pre-write hold-check reads it, so the
+    // check sees a lapsed lease. Without the check the stalled holder would PUT
+    // here and could overwrite R2 with a write that reorders against whichever
+    // sync stole the lock; the check must make it fail closed instead.
+    const restore = raceOnRead("feed_sync_lock_holder", async () => {
+      await env.DB.prepare(
+        "UPDATE shows SET feed_sync_lock_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+      )
+        .bind(show.id)
+        .run();
+    });
+
+    let result: Awaited<ReturnType<typeof synchronizeFeed>>;
+    try {
+      result = await synchronizeFeed(deps, show.id);
+    } finally {
+      restore();
+    }
+
+    // The sync fails closed with the retryable error, and R2 still holds the
+    // previous feed — no stale overwrite from a lease-lapsed holder.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("FEED_WRITE_FAILED");
+    }
+    expect((await readFeed(show.slug))?.text).toBe(feedBefore);
+  });
 });
 
 // ---------------------------------------------------------------------------
