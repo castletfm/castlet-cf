@@ -41,6 +41,10 @@ export const DASHBOARD_RECENT_EPISODES_LIMIT = 10;
 /** Per-run cap on expired intents handled by POST /api/maintenance/run (section 11.6). */
 export const MAINTENANCE_SWEEP_LIMIT = 200;
 
+/** Default and maximum page size for GET /api/storage/orphans (keyset paginated). */
+export const ORPHANS_PAGE_DEFAULT_LIMIT = 50;
+export const ORPHANS_PAGE_MAX_LIMIT = 200;
+
 /**
  * Analytics Engine data retention, used to clamp analytics query windows.
  * Cloudflare retains Analytics Engine data points for about three months;

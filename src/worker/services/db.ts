@@ -909,21 +909,42 @@ export interface OrphanedStorageObjectRow extends StorageObjectRow {
  * The status filter uses idx_storage_status; the orphan set is small by
  * construction (operators purge deliberately, section 21.2).
  */
+/** Keyset cursor for orphan pagination: the last row's (orphaned_at, id). */
+export interface OrphanCursor {
+  orphanedAt: string;
+  id: string;
+}
+
+/**
+ * One page of orphaned objects, newest-orphaned first, keyset-paginated on
+ * (orphaned_at, id). Fetches `limit + 1` rows so the caller can tell whether a
+ * next page exists without a second COUNT query; the extra row is trimmed here
+ * and reported via `hasMore`. `orphaned_at` is COALESCE'd to '' so a row with a
+ * null timestamp (which sorts last) still paginates deterministically and the
+ * cursor comparison never sees a NULL.
+ */
 export async function listOrphanedStorageObjects(
   db: D1Database,
-): Promise<OrphanedStorageObjectRow[]> {
-  const result = await db
-    .prepare(
-      `SELECT so.*,
+  limit: number,
+  cursor: OrphanCursor | null,
+): Promise<{ rows: OrphanedStorageObjectRow[]; hasMore: boolean }> {
+  const select = `SELECT so.*,
               CASE so.owner_kind WHEN 'show' THEN s.title ELSE e.title END AS owner_title
        FROM storage_objects so
        LEFT JOIN shows s ON so.owner_kind = 'show' AND s.id = so.owner_id
        LEFT JOIN episodes e ON so.owner_kind = 'episode' AND e.id = so.owner_id
-       WHERE so.status = 'orphaned'
-       ORDER BY so.orphaned_at DESC, so.id`,
-    )
-    .all<OrphanedStorageObjectRow>();
-  return result.results;
+       WHERE so.status = 'orphaned'`;
+  const order = ` ORDER BY COALESCE(so.orphaned_at, '') DESC, so.id DESC LIMIT ?`;
+  const stmt =
+    cursor === null
+      ? db.prepare(select + order).bind(limit + 1)
+      : db
+          .prepare(select + ` AND (COALESCE(so.orphaned_at, ''), so.id) < (?, ?)` + order)
+          .bind(cursor.orphanedAt, cursor.id, limit + 1);
+  const result = await stmt.all<OrphanedStorageObjectRow>();
+  const rows = result.results;
+  const hasMore = rows.length > limit;
+  return { rows: hasMore ? rows.slice(0, limit) : rows, hasMore };
 }
 
 /** Upload intent for a storage object (storage_object_id is UNIQUE). */

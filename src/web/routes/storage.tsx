@@ -4,9 +4,9 @@
  * report.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import type { MaintenanceRunResponse } from "../../shared/contracts";
+import type { MaintenanceRunResponse, OrphanedObjectResource } from "../../shared/contracts";
 import { ApiError, listOrphans, purgeStorageObject, runMaintenance } from "../api";
 import { formatExactBytes, formatTimestamp } from "../lib/format";
 import { Banner, ByteSize, ConfirmButton, Spinner, useAsync } from "../components/ui";
@@ -14,6 +14,35 @@ import { Banner, ByteSize, ConfirmButton, Spinner, useAsync } from "../component
 export function StorageScreen() {
   const orphans = useAsync(() => listOrphans(), []);
   const [purgeError, setPurgeError] = useState<string | null>(null);
+
+  // Pages beyond the first are fetched on demand and appended. When the first
+  // page (re)loads — including after a purge or maintenance run — reset the
+  // appended pages and seed the cursor from it.
+  const [appended, setAppended] = useState<OrphanedObjectResource[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  useEffect(() => {
+    if (orphans.data !== null) {
+      setAppended([]);
+      setNextCursor(orphans.data.nextCursor);
+    }
+  }, [orphans.data]);
+  const allOrphans = [...(orphans.data?.orphans ?? []), ...appended];
+
+  async function loadMore() {
+    if (nextCursor === null) return;
+    setPurgeError(null);
+    setLoadingMore(true);
+    try {
+      const page = await listOrphans(nextCursor);
+      setAppended((prev) => [...prev, ...page.orphans]);
+      setNextCursor(page.nextCursor);
+    } catch (err: unknown) {
+      setPurgeError(err instanceof ApiError ? err.message : "Could not load more orphans.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   const [report, setReport] = useState<MaintenanceRunResponse | null>(null);
   const [maintenanceError, setMaintenanceError] = useState<string | null>(null);
@@ -91,14 +120,14 @@ export function StorageScreen() {
               </tr>
             </thead>
             <tbody>
-              {orphans.data.orphans.length === 0 && (
+              {allOrphans.length === 0 && (
                 <tr>
                   <td colSpan={6} className="muted">
                     No orphaned objects. Storage is clean.
                   </td>
                 </tr>
               )}
-              {orphans.data.orphans.map((orphan) => (
+              {allOrphans.map((orphan) => (
                 <tr key={orphan.id}>
                   <td>{orphan.kind}</td>
                   <td>{orphan.ownerTitle ?? <span className="muted">(owner removed)</span>}</td>
@@ -121,6 +150,11 @@ export function StorageScreen() {
               ))}
             </tbody>
           </table>
+        )}
+        {nextCursor !== null && (
+          <button type="button" className="btn" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
         )}
       </section>
     </section>

@@ -300,8 +300,9 @@ export async function getAnalytics(from?: string, to?: string): Promise<Analytic
   );
 }
 
-export async function listOrphans(): Promise<OrphanListResponse> {
-  return await request<OrphanListResponse>("/api/storage/orphans");
+export async function listOrphans(cursor?: string): Promise<OrphanListResponse> {
+  const query = cursor === undefined ? "" : `?cursor=${encodeURIComponent(cursor)}`;
+  return await request<OrphanListResponse>(`/api/storage/orphans${query}`);
 }
 
 export async function purgeStorageObject(id: string): Promise<void> {

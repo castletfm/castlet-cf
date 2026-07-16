@@ -157,6 +157,69 @@ describe("GET /api/storage/orphans", () => {
     expect(orphan?.orphanedAt).toBeTruthy();
     expect(orphan?.publicPath).toMatch(/^\/media\//);
   });
+
+  it("paginates newest-orphaned first with limit + cursor and no overlap", async () => {
+    // Isolate from orphans other tests in this file may have left behind (the
+    // per-test DB is shared within a file; beforeEach does not reset it).
+    await env.DB.prepare("DELETE FROM storage_objects WHERE status = 'orphaned'").run();
+
+    // Seed three orphaned objects with distinct orphaned_at timestamps.
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const id = crypto.randomUUID();
+      ids.push(id);
+      await env.DB.prepare(
+        `INSERT INTO storage_objects (
+           id, owner_kind, owner_id, kind, object_key, public_path,
+           original_filename, content_type, byte_length, etag, status,
+           created_at, activated_at, orphaned_at
+         ) VALUES (?, 'episode', ?, 'audio', ?, ?, 'o.mp3', 'audio/mpeg', 100, 'e', 'orphaned', ?, ?, ?)`,
+      )
+        .bind(
+          id,
+          episode.id,
+          `audio/${id}.mp3`,
+          `/media/${id}.mp3`,
+          "2026-07-01T00:00:00.000Z",
+          "2026-07-01T00:00:00.000Z",
+          // orphaned_at increases with i, so newest-first order is id[2], id[1], id[0].
+          `2026-07-0${i + 1}T00:00:00.000Z`,
+        )
+        .run();
+    }
+
+    async function page(query: string): Promise<OrphanListResponse> {
+      const res = await SELF.fetch(`${BASE}/api/storage/orphans${query}`, {
+        headers: readHeaders(auth),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as OrphanListResponse;
+    }
+
+    const first = await page("?limit=2");
+    expect(first.orphans.map((o) => o.id)).toEqual([ids[2], ids[1]]); // newest first
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await page(`?limit=2&cursor=${encodeURIComponent(first.nextCursor as string)}`);
+    expect(second.orphans.map((o) => o.id)).toEqual([ids[0]]);
+    expect(second.nextCursor).toBeNull(); // last page
+
+    // No overlap, full coverage.
+    const seen = [...first.orphans, ...second.orphans].map((o) => o.id);
+    expect(new Set(seen).size).toBe(3);
+  });
+
+  it("rejects a malformed cursor and an out-of-range limit with 422", async () => {
+    const badCursor = await SELF.fetch(`${BASE}/api/storage/orphans?cursor=not-base64!`, {
+      headers: readHeaders(auth),
+    });
+    expect(badCursor.status).toBe(422);
+
+    const badLimit = await SELF.fetch(`${BASE}/api/storage/orphans?limit=99999`, {
+      headers: readHeaders(auth),
+    });
+    expect(badLimit.status).toBe(422);
+  });
 });
 
 describe("DELETE /api/storage/{id}", () => {

@@ -195,6 +195,11 @@ export interface OrphanedObjectResource {
 
 export interface OrphanListResponse {
   orphans: OrphanedObjectResource[];
+  /**
+   * Opaque cursor for the next page, or null when this is the last page. Pass it
+   * back as the `cursor` query param to fetch the following page.
+   */
+  nextCursor: string | null;
 }
 
 // ---------------------------------------------------------------------------

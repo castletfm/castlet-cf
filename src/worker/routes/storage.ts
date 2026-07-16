@@ -2,15 +2,36 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 
+import { ORPHANS_PAGE_DEFAULT_LIMIT, ORPHANS_PAGE_MAX_LIMIT } from "../../shared/constants";
 import type { OrphanListResponse, OrphanedObjectResource } from "../../shared/contracts";
 import type { AppEnv } from "../app-env";
 import { purgeStorageObject, type PurgeErrorCode } from "../domain/storage";
 import { errorResponse } from "../middleware/errors";
-import { listOrphanedStorageObjects, type OrphanedStorageObjectRow } from "../services/db";
+import {
+  listOrphanedStorageObjects,
+  type OrphanCursor,
+  type OrphanedStorageObjectRow,
+} from "../services/db";
 import { validationFailed } from "./common";
 
 /** Storage object ids are UUIDs; reject a malformed path param before any lookup. */
 const objectIdParamSchema = z.uuid();
+
+/** Opaque page cursor: base64(JSON) of the last row's (orphaned_at, id). */
+const cursorSchema = z.object({ o: z.string(), i: z.uuid() });
+
+function encodeCursor(row: OrphanedStorageObjectRow): string {
+  return btoa(JSON.stringify({ o: row.orphaned_at ?? "", i: row.id }));
+}
+
+/** Decodes the cursor; returns undefined when absent, throws on a malformed one. */
+function decodeCursor(raw: string | undefined): OrphanCursor | null {
+  if (raw === undefined || raw === "") {
+    return null;
+  }
+  const parsed = cursorSchema.parse(JSON.parse(atob(raw)) as unknown);
+  return { orphanedAt: parsed.o, id: parsed.i };
+}
 
 /**
  * Storage administration:
@@ -57,8 +78,28 @@ function purgeError(c: Context<AppEnv>, error: PurgeErrorCode): Response {
 }
 
 storageRoutes.get("/orphans", async (c) => {
-  const rows = await listOrphanedStorageObjects(c.env.DB);
-  const body: OrphanListResponse = { orphans: rows.map(orphanRowToResource) };
+  const limitParam = Number(c.req.query("limit") ?? ORPHANS_PAGE_DEFAULT_LIMIT);
+  if (!Number.isInteger(limitParam) || limitParam < 1 || limitParam > ORPHANS_PAGE_MAX_LIMIT) {
+    return errorResponse(
+      c,
+      422,
+      "VALIDATION_FAILED",
+      `limit must be an integer in 1..${ORPHANS_PAGE_MAX_LIMIT}`,
+    );
+  }
+
+  let cursor: OrphanCursor | null;
+  try {
+    cursor = decodeCursor(c.req.query("cursor"));
+  } catch {
+    return errorResponse(c, 422, "VALIDATION_FAILED", "cursor is malformed");
+  }
+
+  const { rows, hasMore } = await listOrphanedStorageObjects(c.env.DB, limitParam, cursor);
+  const body: OrphanListResponse = {
+    orphans: rows.map(orphanRowToResource),
+    nextCursor: hasMore && rows.length > 0 ? encodeCursor(rows[rows.length - 1]!) : null,
+  };
   return c.json(body);
 });
 
