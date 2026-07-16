@@ -3,6 +3,7 @@ import { z } from "zod";
 import { FEED_CACHE_MAX_AGE_SECONDS, MAX_FEED_EPISODES } from "../../shared/constants";
 import {
   acquireFeedSyncLock,
+  holdsFeedSyncLock,
   getShowById,
   getStorageObjectById,
   listPublishedEpisodesForFeed,
@@ -171,7 +172,7 @@ export async function synchronizeFeed(deps: FeedSyncDeps, showId: string): Promi
   }
 
   try {
-    return await synchronizeFeedLocked(deps, showId);
+    return await synchronizeFeedLocked(deps, showId, nonce);
   } finally {
     await releaseFeedSyncLock(db, showId, nonce);
   }
@@ -182,7 +183,11 @@ export async function synchronizeFeed(deps: FeedSyncDeps, showId: string): Promi
  * Re-reads the show under the lock so the XML reflects the current
  * feed_revision and data rather than a stale pre-lock snapshot.
  */
-async function synchronizeFeedLocked(deps: FeedSyncDeps, showId: string): Promise<FeedSyncResult> {
+async function synchronizeFeedLocked(
+  deps: FeedSyncDeps,
+  showId: string,
+  nonce: string,
+): Promise<FeedSyncResult> {
   const { db, media } = deps;
 
   const show = await getShowById(db, showId);
@@ -244,6 +249,17 @@ async function synchronizeFeedLocked(deps: FeedSyncDeps, showId: string): Promis
     // controlled, retryable feed_error path as an R2 write failure (section
     // 12.3), so the request returns FEED_WRITE_FAILED (mapped to 502), not 500.
     await setShowFeedError(db, show.id, FEED_BUILD_ERROR_MESSAGE, nowIso);
+    return { ok: false, error: "FEED_WRITE_FAILED" };
+  }
+
+  // Fail closed if our lease lapsed while we were building the feed. Without
+  // this, a holder that stalled past its TTL would still PUT here — and its
+  // write could reorder with the R2 PUT of whatever sync stole the lock,
+  // leaving R2 holding stale XML. Re-checking right before the write narrows
+  // that window to the PUT itself. It does NOT fully close it (a PUT already
+  // in flight when the lease lapses can still reorder); doing that needs a
+  // Durable Object. Return the retryable failure rather than writing.
+  if (!(await holdsFeedSyncLock(db, show.id, nonce, new Date().toISOString()))) {
     return { ok: false, error: "FEED_WRITE_FAILED" };
   }
 
